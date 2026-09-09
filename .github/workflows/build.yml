@@ -25,9 +25,21 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Generate Source Tree with Chaquopy and Deep Zlib Engine
+      - name: Generate Official Gradle 8.5 Wrapper (Isolated from Gradle 9)
         run: |
+          TMP_DIR=$(mktemp -d)
+          cd "$TMP_DIR"
+          gradle wrapper --gradle-version 8.5 --distribution-type bin
+          cd -
           mkdir -p gradle/wrapper
+          cp "$TMP_DIR/gradlew" ./gradlew
+          cp "$TMP_DIR/gradle/wrapper/gradle-wrapper.jar" ./gradle/wrapper/
+          cp "$TMP_DIR/gradle/wrapper/gradle-wrapper.properties" ./gradle/wrapper/
+          chmod +x gradlew
+          rm -rf "$TMP_DIR"
+
+      - name: Generate Complete Source Tree
+        run: |
           mkdir -p app/src/main/cpp
           mkdir -p app/src/main/python
           mkdir -p app/src/main/java/com/upstool/paktool
@@ -41,7 +53,7 @@ jobs:
           kotlin.code.style=official
           EOF
 
-          # 2. settings.gradle (Groovy DSL with Chaquopy Maven)
+          # 2. settings.gradle
           cat << 'EOF' > settings.gradle
           pluginManagement {
               repositories {
@@ -63,7 +75,7 @@ jobs:
           include ':app'
           EOF
 
-          # 3. Root build.gradle (Chaquopy plugin definition)
+          # 3. Root build.gradle
           cat << 'EOF' > build.gradle
           buildscript {
               repositories {
@@ -72,14 +84,14 @@ jobs:
                   maven { url "https://chaquo.com/maven" }
               }
               dependencies {
-                  classpath 'com.android.tools.build:gradle:8.2.2'
-                  classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22'
-                  classpath 'com.chaquo.python:gradle:15.0.1'
+                  classpath "com.android.tools.build:gradle:8.2.2"
+                  classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22"
+                  classpath "com.chaquo.python:gradle:15.0.1"
               }
           }
           EOF
 
-          # 4. app/build.gradle (Chaquopy + PyCryptodome + Zstandard + NDK)
+          # 4. app/build.gradle (Chaquopy + Python + Native Zlib)
           cat << 'EOF' > app/build.gradle
           apply plugin: 'com.android.application'
           apply plugin: 'org.jetbrains.kotlin.android'
@@ -165,6 +177,8 @@ jobs:
           }
           EOF
 
+          touch app/proguard-rules.pro
+
           # 5. Strings resource
           cat << 'EOF' > app/src/main/res/values/strings.xml
           <resources>
@@ -223,7 +237,7 @@ jobs:
           )
           EOF
 
-          # 8. C++ Deep Zlib Scanner Engine (Zero "Magic Not Found" Crashes)
+          # 8. C++ Deep Zlib Stream Carver Engine (pak_engine.cpp)
           cat << 'EOF' > app/src/main/cpp/pak_engine.cpp
           #include <jni.h>
           #include <string>
@@ -241,27 +255,12 @@ jobs:
           #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
           #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-          constexpr uint32_t PAK_MAGIC = 0x5A6F12E1;
-
           static void sendTerminalLog(JNIEnv* env, jobject callback, jmethodID logMethod, const std::string& msg) {
               if (callback && logMethod) {
                   jstring jmsg = env->NewStringUTF(msg.c_str());
                   env->CallVoidMethod(callback, logMethod, jmsg);
                   env->DeleteLocalRef(jmsg);
               }
-          }
-
-          static bool decompressZlib(const uint8_t* src, size_t srcLen, uint8_t* dst, size_t dstLen) {
-              z_stream strm{};
-              strm.next_in = const_cast<Bytef*>(src);
-              strm.avail_in = static_cast<uInt>(srcLen);
-              strm.next_out = dst;
-              strm.avail_out = static_cast<uInt>(dstLen);
-
-              if (inflateInit(&strm) != Z_OK) return false;
-              int ret = inflate(&strm, Z_FINISH);
-              inflateEnd(&strm);
-              return (ret == Z_STREAM_END || ret == Z_OK);
           }
 
           static bool deepCarveStreams(
@@ -271,22 +270,24 @@ jobs:
               const std::string& pakPath,
               const std::string& outputDir
           ) {
-              sendTerminalLog(env, jCallback, logMethod, "[DEEP SCAN] Starting Zlib stream carving...");
+              sendTerminalLog(env, jCallback, logMethod, "[NATIVE CARVER] Scanning Zlib stream markers in game patch...");
 
               std::ifstream file(pakPath, std::ios::binary);
-              if (!file.is_open()) return false;
+              if (!file.is_open()) {
+                  sendTerminalLog(env, jCallback, logMethod, "[ERROR] Cannot open archive file.");
+                  return false;
+              }
 
-              // Read archive chunks and scan for Zlib headers (0x78 0x9C, 0x78 0xDA, 0x78 0x01)
-              const size_t bufferSize = 1024 * 1024 * 4; // 4MB chunks
-              std::vector<uint8_t> buffer(bufferSize);
-
-              int extractedCount = 0;
               file.seekg(0, std::ios::end);
               int64_t totalSize = file.tellg();
               file.seekg(0, std::ios::beg);
 
-              int64_t currentOffset = 0;
+              const size_t bufferSize = 1024 * 1024 * 4; // 4MB Chunk
+              std::vector<uint8_t> buffer(bufferSize);
               std::vector<uint8_t> decompBuffer(1024 * 1024 * 8); // 8MB unpack buffer
+
+              int extractedCount = 0;
+              int64_t currentOffset = 0;
 
               while (currentOffset < totalSize) {
                   file.seekg(currentOffset);
@@ -309,10 +310,9 @@ jobs:
                               inflateEnd(&strm);
 
                               if ((ret == Z_STREAM_END || ret == Z_OK) && decompressedSize > 64) {
-                                  // Check for UE4 uasset/uexp markers or string paths
                                   std::string contentStr(reinterpret_cast<char*>(decompBuffer.data()), std::min(decompressedSize, (size_t)2048));
-                                  
                                   std::string relPath;
+
                                   if (contentStr.find("BP_PlayerPawn") != std::string::npos) {
                                       if (contentStr.find("uasset") != std::string::npos || decompBuffer[0] == 0xC1 || decompBuffer[3] == 0x9E) {
                                           relPath = "ShadowTrackerExtra/Saved/Paks/BP_PlayerPawn.uasset";
@@ -346,7 +346,7 @@ jobs:
                   currentOffset += (bufferSize - 65536);
               }
 
-              sendTerminalLog(env, jCallback, logMethod, "[SUCCESS] Deep Carver finished. Total extracted: " + std::to_string(extractedCount));
+              sendTerminalLog(env, jCallback, logMethod, "[SUCCESS] Native Carver extracted " + std::to_string(extractedCount) + " files.");
               return extractedCount > 0;
           }
 
@@ -364,7 +364,6 @@ jobs:
               const char* cPakPath = env->GetStringUTFChars(jPakPath, nullptr);
               const char* cOutputDir = env->GetStringUTFChars(jOutputDir, nullptr);
 
-              sendTerminalLog(env, jCallback, logMethod, "[ENGINE] Loading: " + std::string(cPakPath));
               bool res = deepCarveStreams(env, jCallback, logMethod, cPakPath, cOutputDir);
 
               env->ReleaseStringUTFChars(jPakPath, cPakPath);
@@ -373,7 +372,7 @@ jobs:
           }
           EOF
 
-          # 9. Python Core Unpack & Repack Script (app/src/main/python/pak_engine.py)
+          # 9. Python Core Module (app/src/main/python/pak_engine.py)
           cat << 'EOF' > app/src/main/python/pak_engine.py
           import os
           import sys
@@ -391,14 +390,13 @@ jobs:
                   callback.onLog(str(text))
 
           def unpack_pak(pak_path, output_dir, callback):
-              log(callback, f"[PYTHON] Initializing Python Zlib Engine: {os.path.basename(pak_path)}")
+              log(callback, f"[PYTHON] Reading archive: {os.path.basename(pak_path)}")
               os.makedirs(output_dir, exist_ok=True)
               
               extracted = 0
               file_size = os.path.getsize(pak_path)
               
               with open(pak_path, "rb") as f:
-                  # 1. Search for index table / ShadowTrackerExtra strings
                   chunk_size = 1024 * 1024 * 4
                   offset = 0
                   
@@ -420,7 +418,6 @@ jobs:
                           try:
                               decomp = zlib.decompress(stream_data)
                               if len(decomp) > 64:
-                                  # Detect BP_PlayerPawn assets
                                   if b"BP_PlayerPawn" in decomp:
                                       if decomp.startswith(b"\x9e\x2a\x83\xc1") or b".uasset" in decomp:
                                           name = "ShadowTrackerExtra/Saved/Paks/BP_PlayerPawn.uasset"
@@ -434,7 +431,6 @@ jobs:
                                       extracted += 1
                                       log(callback, f"📁 [FOUND] {name} ({len(decomp)} bytes)")
                                   
-                                  # Detect general ShadowTrackerExtra tree files
                                   elif b"ShadowTrackerExtra" in decomp:
                                       p_start = decomp.find(b"ShadowTrackerExtra")
                                       p_end = decomp.find(b"\x00", p_start)
@@ -457,11 +453,9 @@ jobs:
                       offset += (chunk_size - 65536)
 
               if extracted > 0:
-                  log(callback, f"[SUCCESS] Python extracted {extracted} target files with full structure.")
+                  log(callback, f"[SUCCESS] Python extracted {extracted} target files.")
                   return True
-              else:
-                  log(callback, "[WARN] Python scanner found 0 streams, switching to Native C++...")
-                  return False
+              return False
 
           def repack_pak(source_dir, output_pak, callback):
               log(callback, f"[REPACK] Serializing tree from: {source_dir}")
@@ -479,18 +473,16 @@ jobs:
                       offset = pak.tell()
                       size = len(file_data)
                       
-                      # Write dummy header
                       pak.write(struct.pack("<QQQ", offset, size, size))
-                      pak.write(struct.pack("<I", 0)) # No compression for fast repack
-                      pak.write(b"\x00" * 20) # SHA1
-                      pak.write(struct.pack("<B", 0)) # Encrypted
-                      pak.write(struct.pack("<I", 0)) # Block size
+                      pak.write(struct.pack("<I", 0))
+                      pak.write(b"\x00" * 20)
+                      pak.write(struct.pack("<B", 0))
+                      pak.write(struct.pack("<I", 0))
                       
                       pak.write(file_data)
                       entries.append((rel_path, offset, size))
                       log(callback, f"📦 [PACK] {rel_path}")
 
-                  # Write Index
                   index_offset = pak.tell()
                   mount = "../../../\x00"
                   pak.write(struct.pack("<I", len(mount)))
@@ -507,20 +499,19 @@ jobs:
 
                   index_size = pak.tell() - index_offset
 
-                  # Write FPakInfo (Magic 0x5A6F12E1 at EOF)
-                  pak.write(b"\x00" * 16) # Guid
-                  pak.write(struct.pack("<B", 0)) # Encrypted index
-                  pak.write(struct.pack("<I", 0x5A6F12E1)) # PAK Magic
-                  pak.write(struct.pack("<I", 8)) # Version
+                  pak.write(b"\x00" * 16)
+                  pak.write(struct.pack("<B", 0))
+                  pak.write(struct.pack("<I", 0x5A6F12E1))
+                  pak.write(struct.pack("<I", 8))
                   pak.write(struct.pack("<Q", index_offset))
                   pak.write(struct.pack("<Q", index_size))
-                  pak.write(b"\x00" * 20) # Hash
+                  pak.write(b"\x00" * 20)
 
               log(callback, f"[FINISHED] Repacked {len(file_list)} files into {os.path.basename(output_pak)}")
               return True
           EOF
 
-          # 10. PakEngine.kt (Dual Engine: Python Chaquopy with C++ Native Fallback)
+          # 10. PakEngine.kt
           cat << 'EOF' > app/src/main/java/com/upstool/paktool/PakEngine.kt
           package com.upstool.paktool
 
@@ -562,31 +553,29 @@ jobs:
                       val py = Python.getInstance()
                       val module = py.getModule("pak_engine")
                       val pyResult = module.callAttr("unpack_pak", file.absolutePath, targetFolder.absolutePath, callback).toBoolean()
-
                       if (pyResult) return@withContext true
                   } catch (e: Exception) {
-                      callback.onLog("[PY ERROR] ${e.message}. Launching Native Deep Carver...")
+                      callback.onLog("[PY] Handing over to Native Deep Carver...")
                   }
 
-                  // Fallback to Native Deep Carver
                   nativeUnpackDeep(file.absolutePath, targetFolder.absolutePath, callback)
               }
 
               suspend fun replaceAndRepack(folderName: String, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
                   val unpackedFolder = File(dirUnpack, folderName)
                   if (!unpackedFolder.exists()) {
-                      callback.onLog("[ERROR] Unpack directory missing: $folderName")
+                      callback.onLog("[ERROR] Directory not found: $folderName")
                       return@withContext false
                   }
 
-                  callback.onLog("[REPLACE] Overwriting files from /Editor into hierarchy...")
+                  callback.onLog("[REPLACE] Overwriting from Editor into hierarchy...")
                   var replacedCount = 0
                   dirEditor.listFiles()?.forEach { editorFile ->
                       unpackedFolder.walkTopDown().forEach { fileInTree ->
                           if (fileInTree.name.equals(editorFile.name, ignoreCase = true)) {
                               editorFile.copyTo(fileInTree, overwrite = true)
                               replacedCount++
-                              callback.onLog("🔄 [REPLACED] ${editorFile.name} -> ${fileInTree.relativeTo(unpackedFolder).path}")
+                              callback.onLog("🔄 [REPLACED] ${editorFile.name}")
                           }
                       }
                   }
@@ -605,7 +594,7 @@ jobs:
           }
           EOF
 
-          # 11. MainActivity.kt (UI Screen with Selection, Terminal, Action Buttons)
+          # 11. MainActivity.kt (UI Screen)
           cat << 'EOF' > app/src/main/java/com/upstool/paktool/MainActivity.kt
           package com.upstool.paktool
 
@@ -668,7 +657,7 @@ jobs:
               var selectedFile by remember { mutableStateOf<File?>(null) }
               var unpackedFolders by remember { mutableStateOf<List<String>>(emptyList()) }
 
-              var terminalLogs by remember { mutableStateOf<List<String>>(listOf("[SYSTEM] Upstool Python & Native Engines Loaded.")) }
+              var terminalLogs by remember { mutableStateOf<List<String>>(listOf("[SYSTEM] Upstool Python & Native Zlib Engines Loaded.")) }
               var isBusy by remember { mutableStateOf(false) }
 
               var showOriginalDropdown by remember { mutableStateOf(false) }
@@ -757,7 +746,6 @@ jobs:
                           }
                       }
 
-                      // Target Archive Selector
                       Card(
                           modifier = Modifier.fillMaxWidth(),
                           colors = CardDefaults.cardColors(containerColor = Color(0xFF181818)),
@@ -787,7 +775,6 @@ jobs:
                           }
                       }
 
-                      // Monospace Terminal Console
                       Box(
                           modifier = Modifier
                               .fillMaxWidth()
@@ -802,9 +789,8 @@ jobs:
                           ) {
                               items(terminalLogs) { log ->
                                   val logColor = when {
-                                      log.startsWith("[ERROR]") || log.startsWith("[PY ERROR]") -> Color(0xFFFF5252)
+                                      log.startsWith("[ERROR]") || log.startsWith("[REPACK ERROR]") -> Color(0xFFFF5252)
                                       log.startsWith("[SUCCESS]") || log.startsWith("[FINISHED]") -> Color(0xFF00E676)
-                                      log.startsWith("[WARN]") -> Color(0xFFFFB74D)
                                       log.startsWith("📁") -> Color(0xFFFFD54F)
                                       log.startsWith("📦") || log.startsWith("🔄") -> Color(0xFF80D8FF)
                                       else -> Color(0xFFE0E0E0)
@@ -820,7 +806,6 @@ jobs:
                           }
                       }
 
-                      // Action Buttons
                       Row(
                           modifier = Modifier.fillMaxWidth(),
                           horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -829,7 +814,7 @@ jobs:
                               onClick = {
                                   selectedFile?.let { target ->
                                       isBusy = true
-                                      addLog("[START] Processing: ${target.name}")
+                                      addLog("[START] Preparing unpack: ${target.name}")
                                       scope.launch {
                                           val ok = PakEngine.unpackArchive(target, callback)
                                           refreshFiles()
@@ -923,11 +908,6 @@ jobs:
           }
           EOF
 
-      - name: Generate Official Gradle Wrapper 8.5
-        run: |
-          gradle wrapper --gradle-version 8.5 --distribution-type bin
-          chmod +x gradlew
-
       - name: Commit and Push All Sources to Repository
         run: |
           git config user.name "github-actions[bot]"
@@ -936,7 +916,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No new changes to commit."
           else
-            git commit -m "Integrate Chaquopy, PyCryptodome, Zstandard, and Deep Zlib Carving [skip ci]"
+            git commit -m "Fix Gradle wrapper isolation, Chaquopy, and Deep Carving [skip ci]"
             git push origin HEAD:${{ github.ref_name }}
           fi
 
