@@ -1,0 +1,848 @@
+name: Setup Project and Build APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Generate All Source Files
+        run: |
+          mkdir -p gradle/wrapper
+          mkdir -p app/src/main/cpp
+          mkdir -p app/src/main/java/com/upstool/paktool
+          mkdir -p app/src/main/res/values
+
+          # 1. Root settings.gradle.kts
+          cat << 'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "Upstool"
+          include(":app")
+          EOF
+
+          # 2. Root build.gradle.kts
+          cat << 'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.3.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+          }
+          EOF
+
+          # 3. app/build.gradle.kts
+          cat << 'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.upstool.paktool"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.upstool.paktool"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0.0"
+
+                  ndk {
+                      abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))
+                  }
+
+                  externalNativeBuild {
+                      cmake {
+                          cppFlags += "-std=c++17"
+                          arguments += "-DANDROID_STL=c++_shared"
+                      }
+                  }
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+
+              buildFeatures {
+                  compose = true
+              }
+
+              composeOptions {
+                  kotlinCompilerExtensionVersion = "1.5.8"
+              }
+
+              externalNativeBuild {
+                  cmake {
+                      path = file("src/main/cpp/CMakeLists.txt")
+                      version = "3.22.1"
+                  }
+              }
+
+              ndkVersion = "26.1.10909125"
+          }
+
+          dependencies {
+              val composeBom = platform("androidx.compose:compose-bom:2024.02.00")
+              implementation(composeBom)
+              implementation("androidx.core:core-ktx:1.12.0")
+              implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+              implementation("androidx.activity:activity-compose:1.8.2")
+              implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.ui:ui-graphics")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.compose.material:material-icons-extended")
+              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+          }
+          EOF
+
+          # 4. AndroidManifest.xml
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:tools="http://schemas.android.com/tools">
+
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+              <uses-permission
+                  android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+                  tools:ignore="ScopedStorage" />
+
+              <application
+                  android:allowBackup="true"
+                  android:label="Upstool"
+                  android:requestLegacyExternalStorage="true"
+                  android:supportsRtl="true"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          # 5. CMakeLists.txt
+          cat << 'EOF' > app/src/main/cpp/CMakeLists.txt
+          cmake_minimum_required(VERSION 3.22.1)
+          project("upstool_native")
+
+          set(CMAKE_CXX_STANDARD 17)
+
+          add_library(upstool_native SHARED
+              pak_engine.cpp
+          )
+
+          find_library(log-lib log)
+          find_package(ZLIB REQUIRED)
+
+          target_link_libraries(upstool_native
+              ${log-lib}
+              ZLIB::ZLIB
+          )
+          EOF
+
+          # 6. C++ Core Engine (pak_engine.cpp)
+          cat << 'EOF' > app/src/main/cpp/pak_engine.cpp
+          #include <jni.h>
+          #include <string>
+          #include <vector>
+          #include <fstream>
+          #include <filesystem>
+          #include <algorithm>
+          #include <cstdint>
+          #include <zlib.h>
+          #include <android/log.h>
+
+          namespace fs = std::filesystem;
+
+          #define LOG_TAG "UpstoolNative"
+          #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+          #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+          constexpr uint32_t PAK_MAGIC = 0x5A6F12E1;
+
+          #pragma pack(push, 1)
+          struct FPakCompressedBlock {
+              int64_t compressedStart;
+              int64_t compressedEnd;
+          };
+
+          struct FPakInfo {
+              int32_t  version = 8;
+              int64_t  indexOffset = 0;
+              int64_t  indexSize = 0;
+              uint8_t  indexHash[20] = {0};
+              uint8_t  bEncryptedIndex = 0;
+              uint32_t magic = PAK_MAGIC;
+          };
+          #pragma pack(pop)
+
+          struct FPakEntry {
+              std::string filename;
+              int64_t  offset = 0;
+              int64_t  size = 0;
+              int64_t  uncompressedSize = 0;
+              int32_t  compressionMethod = 0;
+              uint8_t  hash[20] = {0};
+              std::vector<FPakCompressedBlock> compressionBlocks;
+              uint8_t  bEncrypted = 0;
+              uint32_t compressionBlockSize = 0;
+
+              int64_t getSerializedHeaderSize() const {
+                  int64_t baseSize = sizeof(int64_t) * 3 + sizeof(int32_t) + 20 + sizeof(uint8_t) + sizeof(uint32_t);
+                  if (compressionMethod != 0) {
+                      baseSize += sizeof(int32_t) + (compressionBlocks.size() * sizeof(FPakCompressedBlock));
+                  }
+                  return baseSize;
+              }
+          };
+
+          static std::string readFString(std::ifstream& stream) {
+              int32_t length = 0;
+              stream.read(reinterpret_cast<char*>(&length), sizeof(int32_t));
+              if (length <= 0) return "";
+              std::vector<char> buffer(length);
+              stream.read(buffer.data(), length);
+              return std::string(buffer.data());
+          }
+
+          static void writeFString(std::ofstream& stream, const std::string& str) {
+              int32_t length = static_cast<int32_t>(str.length() + 1);
+              stream.write(reinterpret_cast<const char*>(&length), sizeof(int32_t));
+              stream.write(str.c_str(), length);
+          }
+
+          static FPakEntry readEntry(std::ifstream& stream) {
+              FPakEntry entry;
+              stream.read(reinterpret_cast<char*>(&entry.offset), sizeof(int64_t));
+              stream.read(reinterpret_cast<char*>(&entry.size), sizeof(int64_t));
+              stream.read(reinterpret_cast<char*>(&entry.uncompressedSize), sizeof(int64_t));
+              stream.read(reinterpret_cast<char*>(&entry.compressionMethod), sizeof(int32_t));
+              stream.read(reinterpret_cast<char*>(entry.hash), 20);
+
+              if (entry.compressionMethod != 0) {
+                  int32_t blockCount = 0;
+                  stream.read(reinterpret_cast<char*>(&blockCount), sizeof(int32_t));
+                  entry.compressionBlocks.resize(blockCount);
+                  for (int32_t i = 0; i < blockCount; ++i) {
+                      stream.read(reinterpret_cast<char*>(&entry.compressionBlocks[i]), sizeof(FPakCompressedBlock));
+                  }
+              }
+              stream.read(reinterpret_cast<char*>(&entry.bEncrypted), sizeof(uint8_t));
+              stream.read(reinterpret_cast<char*>(&entry.compressionBlockSize), sizeof(uint32_t));
+              return entry;
+          }
+
+          static void writeEntry(std::ofstream& stream, const FPakEntry& entry) {
+              stream.write(reinterpret_cast<const char*>(&entry.offset), sizeof(int64_t));
+              stream.write(reinterpret_cast<const char*>(&entry.size), sizeof(int64_t));
+              stream.write(reinterpret_cast<const char*>(&entry.uncompressedSize), sizeof(int64_t));
+              stream.write(reinterpret_cast<const char*>(&entry.compressionMethod), sizeof(int32_t));
+              stream.write(reinterpret_cast<const char*>(entry.hash), 20);
+
+              if (entry.compressionMethod != 0) {
+                  int32_t blockCount = static_cast<int32_t>(entry.compressionBlocks.size());
+                  stream.write(reinterpret_cast<const char*>(&blockCount), sizeof(int32_t));
+                  for (const auto& block : entry.compressionBlocks) {
+                      stream.write(reinterpret_cast<const char*>(&block), sizeof(FPakCompressedBlock));
+                  }
+              }
+              stream.write(reinterpret_cast<const char*>(&entry.bEncrypted), sizeof(uint8_t));
+              stream.write(reinterpret_cast<const char*>(&entry.compressionBlockSize), sizeof(uint32_t));
+          }
+
+          static bool decompressZlib(const uint8_t* src, size_t srcLen, uint8_t* dst, size_t dstLen) {
+              z_stream strm{};
+              strm.next_in = const_cast<Bytef*>(src);
+              strm.avail_in = static_cast<uInt>(srcLen);
+              strm.next_out = dst;
+              strm.avail_out = static_cast<uInt>(dstLen);
+
+              if (inflateInit(&strm) != Z_OK) return false;
+              int ret = inflate(&strm, Z_FINISH);
+              inflateEnd(&strm);
+              return (ret == Z_STREAM_END || ret == Z_OK);
+          }
+
+          extern "C" JNIEXPORT jboolean JNICALL
+          Java_com_upstool_paktool_PakEngine_nativeUnpackFull(
+              JNIEnv* env,
+              jobject,
+              jstring jPakPath,
+              jstring jOutputDir
+          ) {
+              const char* cPakPath = env->GetStringUTFChars(jPakPath, nullptr);
+              const char* cOutputDir = env->GetStringUTFChars(jOutputDir, nullptr);
+
+              std::ifstream file(cPakPath, std::ios::binary | std::ios::ate);
+              if (!file.is_open()) {
+                  env->ReleaseStringUTFChars(jPakPath, cPakPath);
+                  env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
+                  return JNI_FALSE;
+              }
+
+              std::streamsize fileSize = file.tellg();
+              if (fileSize < 128) {
+                  file.close();
+                  env->ReleaseStringUTFChars(jPakPath, cPakPath);
+                  env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
+                  return JNI_FALSE;
+              }
+
+              size_t scanSize = std::min(fileSize, static_cast<std::streamsize>(256));
+              std::vector<uint8_t> buffer(scanSize);
+              file.seekg(fileSize - scanSize);
+              file.read(reinterpret_cast<char*>(buffer.data()), scanSize);
+
+              int64_t magicOffset = -1;
+              for (int64_t i = scanSize - 4; i >= 0; --i) {
+                  if (*reinterpret_cast<uint32_t*>(&buffer[i]) == PAK_MAGIC) {
+                      magicOffset = fileSize - scanSize + i;
+                      break;
+                  }
+              }
+
+              if (magicOffset == -1) {
+                  file.close();
+                  env->ReleaseStringUTFChars(jPakPath, cPakPath);
+                  env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
+                  return JNI_FALSE;
+              }
+
+              FPakInfo info;
+              file.seekg(magicOffset - (sizeof(FPakInfo) - sizeof(uint32_t)));
+              file.read(reinterpret_cast<char*>(&info), sizeof(FPakInfo));
+
+              file.seekg(info.indexOffset);
+              std::string mountPoint = readFString(file);
+              int32_t entryCount = 0;
+              file.read(reinterpret_cast<char*>(&entryCount), sizeof(int32_t));
+
+              for (int32_t i = 0; i < entryCount; ++i) {
+                  std::string internalPath = readFString(file);
+                  FPakEntry entry = readEntry(file);
+
+                  std::string cleanRelPath = internalPath;
+                  while (cleanRelPath.rfind("../", 0) == 0) {
+                      cleanRelPath.erase(0, 3);
+                  }
+
+                  fs::path destPath = fs::path(cOutputDir) / cleanRelPath;
+                  fs::create_directories(destPath.parent_path());
+
+                  std::ofstream outFile(destPath, std::ios::binary);
+                  if (!outFile.is_open()) continue;
+
+                  std::streampos savedIndexPos = file.tellg();
+                  int64_t dataOffset = entry.offset + entry.getSerializedHeaderSize();
+
+                  if (entry.compressionMethod == 0) {
+                      file.seekg(dataOffset);
+                      std::vector<char> chunk(65536);
+                      int64_t remain = entry.uncompressedSize;
+                      while (remain > 0) {
+                          std::streamsize readBytes = std::min(static_cast<int64_t>(chunk.size()), remain);
+                          file.read(chunk.data(), readBytes);
+                          outFile.write(chunk.data(), readBytes);
+                          remain -= readBytes;
+                      }
+                  } else {
+                      uint32_t blockSize = entry.compressionBlockSize > 0 ? entry.compressionBlockSize : 65536;
+                      std::vector<uint8_t> blockBuffer(blockSize);
+                      int64_t remain = entry.uncompressedSize;
+
+                      for (const auto& block : entry.compressionBlocks) {
+                          int64_t cSize = block.compressedEnd - block.compressedStart;
+                          std::vector<uint8_t> cBuffer(cSize);
+
+                          file.seekg(dataOffset + block.compressedStart);
+                          file.read(reinterpret_cast<char*>(cBuffer.data()), cSize);
+
+                          size_t outSize = std::min(static_cast<int64_t>(blockSize), remain);
+                          decompressZlib(cBuffer.data(), cSize, blockBuffer.data(), outSize);
+                          outFile.write(reinterpret_cast<char*>(blockBuffer.data()), outSize);
+                          remain -= outSize;
+                      }
+                  }
+
+                  outFile.close();
+                  file.seekg(savedIndexPos);
+              }
+
+              file.close();
+              env->ReleaseStringUTFChars(jPakPath, cPakPath);
+              env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
+              return JNI_TRUE;
+          }
+
+          extern "C" JNIEXPORT jboolean JNICALL
+          Java_com_upstool_paktool_PakEngine_nativeRepack(
+              JNIEnv* env,
+              jobject,
+              jstring jSourceDir,
+              jstring jOutputPak
+          ) {
+              const char* cSrc = env->GetStringUTFChars(jSourceDir, nullptr);
+              const char* cOut = env->GetStringUTFChars(jOutputPak, nullptr);
+
+              std::ofstream pak(cOut, std::ios::binary | std::ios::trunc);
+              if (!pak.is_open()) {
+                  env->ReleaseStringUTFChars(jSourceDir, cSrc);
+                  env->ReleaseStringUTFChars(jOutputPak, cOut);
+                  return JNI_FALSE;
+              }
+
+              std::vector<FPakEntry> entries;
+
+              for (const auto& dirEntry : fs::recursive_directory_iterator(cSrc)) {
+                  if (!dirEntry.is_regular_file()) continue;
+
+                  fs::path fullPath = dirEntry.path();
+                  std::string relPath = fs::relative(fullPath, cSrc).generic_string();
+
+                  int64_t fileOffset = pak.tellp();
+                  int64_t fileSize = fs::file_size(fullPath);
+
+                  FPakEntry entry;
+                  entry.filename = relPath;
+                  entry.offset = fileOffset;
+                  entry.size = fileSize;
+                  entry.uncompressedSize = fileSize;
+                  entry.compressionMethod = 0;
+                  entry.bEncrypted = 0;
+
+                  writeEntry(pak, entry);
+
+                  std::ifstream srcStream(fullPath, std::ios::binary);
+                  pak << srcStream.rdbuf();
+                  srcStream.close();
+
+                  entries.push_back(entry);
+              }
+
+              int64_t indexOffset = pak.tellp();
+              writeFString(pak, "../../../");
+
+              int32_t totalFiles = static_cast<int32_t>(entries.size());
+              pak.write(reinterpret_cast<const char*>(&totalFiles), sizeof(int32_t));
+
+              for (const auto& entry : entries) {
+                  writeFString(pak, entry.filename);
+                  writeEntry(pak, entry);
+              }
+
+              int64_t indexSize = static_cast<int64_t>(pak.tellp()) - indexOffset;
+
+              FPakInfo footer;
+              footer.version = 8;
+              footer.indexOffset = indexOffset;
+              footer.indexSize = indexSize;
+              footer.magic = PAK_MAGIC;
+              pak.write(reinterpret_cast<const char*>(&footer), sizeof(FPakInfo));
+
+              pak.close();
+              env->ReleaseStringUTFChars(jSourceDir, cSrc);
+              env->ReleaseStringUTFChars(jOutputPak, cOut);
+              return JNI_TRUE;
+          }
+          EOF
+
+          # 7. PakEngine.kt
+          cat << 'EOF' > app/src/main/java/com/upstool/paktool/PakEngine.kt
+          package com.upstool.paktool
+
+          import android.os.Environment
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.withContext
+          import java.io.File
+
+          object PakEngine {
+              init {
+                  System.loadLibrary("upstool_native")
+              }
+
+              private external fun nativeUnpackFull(pakPath: String, outputDir: String): Boolean
+              private external fun nativeRepack(sourceDir: String, outputPak: String): Boolean
+
+              private val baseDir = File(Environment.getExternalStorageDirectory(), "Upstool")
+
+              val dirOriginal = File(baseDir, "Original").apply { mkdirs() }
+              val dirEditor   = File(baseDir, "Editor").apply { mkdirs() }
+              val dirUnpack   = File(baseDir, "Unpack").apply { mkdirs() }
+              val dirRepack   = File(baseDir, "Repack").apply { mkdirs() }
+
+              suspend fun unpackArchive(archiveFile: File): Boolean = withContext(Dispatchers.IO) {
+                  val outFolder = File(dirUnpack, archiveFile.nameWithoutExtension)
+                  if (!outFolder.exists()) outFolder.mkdirs()
+                  nativeUnpackFull(archiveFile.absolutePath, outFolder.absolutePath)
+              }
+
+              suspend fun replaceAndRepack(unpackedFolderName: String): Boolean = withContext(Dispatchers.IO) {
+                  val targetUnpackDir = File(dirUnpack, unpackedFolderName)
+                  if (!targetUnpackDir.exists()) return@withContext false
+
+                  dirEditor.listFiles()?.forEach { editFile ->
+                      targetUnpackDir.walkTopDown().forEach { extractedFile ->
+                          if (extractedFile.name.equals(editFile.name, ignoreCase = true)) {
+                              editFile.copyTo(extractedFile, overwrite = true)
+                          }
+                      }
+                  }
+
+                  val outRepackedPak = File(dirRepack, "$unpackedFolderName.pak")
+                  nativeRepack(targetUnpackDir.absolutePath, outRepackedPak.absolutePath)
+              }
+          }
+          EOF
+
+          # 8. MainActivity.kt (UI)
+          cat << 'EOF' > app/src/main/java/com/upstool/paktool/MainActivity.kt
+          package com.upstool.paktool
+
+          import android.content.Intent
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Environment
+          import android.provider.Settings
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.setContent
+          import androidx.compose.animation.AnimatedVisibility
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.border
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.lazy.items
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.filled.Archive
+          import androidx.compose.material.icons.filled.Folder
+          import androidx.compose.material.icons.filled.Refresh
+          import androidx.compose.material.icons.filled.Warning
+          import androidx.compose.material3.*
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.text.font.FontFamily
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import kotlinx.coroutines.launch
+          import java.io.File
+
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContent {
+                      MaterialTheme(colorScheme = darkColorScheme()) {
+                          Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0D0D0D)) {
+                              UpstoolScreen()
+                          }
+                      }
+                  }
+              }
+          }
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          fun UpstoolScreen() {
+              val context = LocalContext.current
+              val scope = rememberCoroutineScope()
+
+              var originalFiles by remember { mutableStateOf<List<File>>(emptyList()) }
+              var editorFiles by remember { mutableStateOf<List<String>>(emptyList()) }
+              var unpackedFolders by remember { mutableStateOf<List<String>>(emptyList()) }
+              var repackedFiles by remember { mutableStateOf<List<String>>(emptyList()) }
+
+              var isBusy by remember { mutableStateOf(false) }
+              var statusLog by remember { mutableStateOf("Ready") }
+              var currentAction by remember { mutableStateOf("") }
+
+              var showUnpackDialog by remember { mutableStateOf(false) }
+              var showRepackDialog by remember { mutableStateOf(false) }
+
+              fun refresh() {
+                  val orig = PakEngine.dirOriginal.listFiles()
+                      ?.filter { it.isFile && (it.extension in listOf("pak", "obb") || it.name.contains("patch")) }
+                      ?.toList() ?: emptyList()
+
+                  val edit = PakEngine.dirEditor.listFiles()?.map { it.name } ?: emptyList()
+                  val unp = PakEngine.dirUnpack.listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
+                  val rep = PakEngine.dirRepack.listFiles()?.map { it.name } ?: emptyList()
+
+                  originalFiles = orig
+                  editorFiles = edit
+                  unpackedFolders = unp
+                  repackedFiles = rep
+              }
+
+              LaunchedEffect(Unit) { refresh() }
+
+              val hasStoragePermission = remember {
+                  derivedStateOf {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                          Environment.isExternalStorageManager()
+                      } else true
+                  }
+              }
+
+              Scaffold(
+                  topBar = {
+                      TopAppBar(
+                          title = { Text("UPSTOOL PAK ENGINE", fontWeight = FontWeight.Black) },
+                          actions = {
+                              IconButton(onClick = { refresh() }, enabled = !isBusy) {
+                                  Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color(0xFF00E5FF))
+                              }
+                          },
+                          colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF141414))
+                      )
+                  }
+              ) { padding ->
+                  Column(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .padding(padding)
+                          .padding(16.dp),
+                      verticalArrangement = Arrangement.spacedBy(12.dp)
+                  ) {
+                      if (!hasStoragePermission.value && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                          Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF3B1212))) {
+                              Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                  Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFF5252))
+                                  Spacer(modifier = Modifier.width(8.dp))
+                                  Text("Storage Permission Needed", color = Color.White, modifier = Modifier.weight(1f))
+                                  Button(
+                                      onClick = {
+                                          val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                                              data = Uri.parse("package:${context.packageName}")
+                                          }
+                                          context.startActivity(intent)
+                                      },
+                                      colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252))
+                                  ) { Text("Fix") }
+                              }
+                          }
+                      }
+
+                      AnimatedVisibility(visible = isBusy) {
+                          Column {
+                              Text(currentAction, color = Color(0xFF00E5FF), fontSize = 12.sp)
+                              Spacer(modifier = Modifier.height(4.dp))
+                              LinearProgressIndicator(
+                                  modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                  color = Color(0xFF00E5FF)
+                              )
+                          }
+                      }
+
+                      FolderStat("Original Pak/Obb", originalFiles.size, "/sdcard/Upstool/Original", Color(0xFF80D8FF))
+                      FolderStat("Editor Assets", editorFiles.size, "/sdcard/Upstool/Editor", Color(0xFFFFD180))
+                      FolderStat("Unpacked Hierarchy", unpackedFolders.size, "/sdcard/Upstool/Unpack", Color(0xFFB388FF))
+                      FolderStat("Repacked Pak", repackedFiles.size, "/sdcard/Upstool/Repack", Color(0xFFA7FFEB))
+
+                      Spacer(modifier = Modifier.weight(1f))
+
+                      Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                          Button(
+                              onClick = { showUnpackDialog = true },
+                              enabled = !isBusy && originalFiles.isNotEmpty(),
+                              modifier = Modifier.weight(1f).height(52.dp),
+                              shape = RoundedCornerShape(10.dp),
+                              colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0288D1))
+                          ) { Text("UNPACK (CHOOSE)", fontWeight = FontWeight.Bold) }
+
+                          Button(
+                              onClick = { showRepackDialog = true },
+                              enabled = !isBusy && unpackedFolders.isNotEmpty() && editorFiles.isNotEmpty(),
+                              modifier = Modifier.weight(1f).height(52.dp),
+                              shape = RoundedCornerShape(10.dp),
+                              colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00C853))
+                          ) { Text("REPACK (CHOOSE)", fontWeight = FontWeight.Bold) }
+                      }
+
+                      Box(
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .border(1.dp, Color(0xFF262626), RoundedCornerShape(8.dp))
+                              .background(Color(0xFF161616))
+                              .padding(12.dp)
+                      ) {
+                          Text("> $statusLog", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Color(0xFFEEEEEE))
+                      }
+                  }
+              }
+
+              if (showUnpackDialog) {
+                  AlertDialog(
+                      onDismissRequest = { showUnpackDialog = false },
+                      title = { Text("Select Archive to Unpack") },
+                      text = {
+                          LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
+                              items(originalFiles) { file ->
+                                  Row(
+                                      modifier = Modifier.fillMaxWidth().clickable {
+                                          showUnpackDialog = false
+                                          isBusy = true
+                                          currentAction = "Unpacking with Zlib: ${file.name}"
+                                          scope.launch {
+                                              val ok = PakEngine.unpackArchive(file)
+                                              refresh()
+                                              isBusy = false
+                                              statusLog = if (ok) "Unpack successful: ${file.name}" else "Unpack failed"
+                                          }
+                                      }.padding(vertical = 10.dp),
+                                      verticalAlignment = Alignment.CenterVertically
+                                  ) {
+                                      Icon(Icons.Default.Archive, contentDescription = null, tint = Color(0xFF00E5FF))
+                                      Spacer(modifier = Modifier.width(10.dp))
+                                      Text(file.name, fontSize = 13.sp, maxLines = 1)
+                                  }
+                              }
+                          }
+                      },
+                      confirmButton = {},
+                      dismissButton = { TextButton(onClick = { showUnpackDialog = false }) { Text("Cancel") } }
+                  )
+              }
+
+              if (showRepackDialog) {
+                  AlertDialog(
+                      onDismissRequest = { showRepackDialog = false },
+                      title = { Text("Select Folder to Repack") },
+                      text = {
+                          LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
+                              items(unpackedFolders) { folder ->
+                                  Row(
+                                      modifier = Modifier.fillMaxWidth().clickable {
+                                          showRepackDialog = false
+                                          isBusy = true
+                                          currentAction = "Injecting Editor files into: $folder"
+                                          scope.launch {
+                                              val ok = PakEngine.replaceAndRepack(folder)
+                                              refresh()
+                                              isBusy = false
+                                              statusLog = if (ok) "Repack completed: $folder.pak" else "Repack failed"
+                                          }
+                                      }.padding(vertical = 10.dp),
+                                      verticalAlignment = Alignment.CenterVertically
+                                  ) {
+                                      Icon(Icons.Default.Folder, contentDescription = null, tint = Color(0xFF69F0AE))
+                                      Spacer(modifier = Modifier.width(10.dp))
+                                      Text(folder, fontSize = 13.sp, maxLines = 1)
+                                  }
+                              }
+                          }
+                      },
+                      confirmButton = {},
+                      dismissButton = { TextButton(onClick = { showRepackDialog = false }) { Text("Cancel") } }
+                  )
+              }
+          }
+
+          @Composable
+          fun FolderStat(title: String, count: Int, path: String, accent: Color) {
+              Card(
+                  modifier = Modifier.fillMaxWidth(),
+                  shape = RoundedCornerShape(8.dp),
+                  colors = CardDefaults.cardColors(containerColor = Color(0xFF181818))
+              ) {
+                  Row(
+                      modifier = Modifier.padding(12.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.SpaceBetween
+                  ) {
+                      Column {
+                          Text(title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                          Text(path, color = Color.Gray, fontSize = 11.sp)
+                      }
+                      Text("$count items", color = accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                  }
+              }
+          }
+          EOF
+
+      - name: Generate Official Gradle Wrapper 8.5
+        run: |
+          gradle wrapper --gradle-version 8.5 --distribution-type bin
+          chmod +x gradlew
+
+      - name: Commit and Push All Sources to Repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          if git diff --staged --quiet; then
+            echo "No new changes to commit."
+          else
+            git commit -m "Auto-generate full Upstool source tree [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
+
+      - name: Install Android NDK and CMake
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Upstool-Debug-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
