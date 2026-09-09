@@ -40,7 +40,7 @@ object PakEngine {
             val pyResult = module.callAttr("unpack_pak", file.absolutePath, targetFolder.absolutePath, callback).toBoolean()
             if (pyResult) return@withContext true
         } catch (e: Exception) {
-            callback.onLog("[PY] Handing over to Native Deep Carver...")
+            callback.onLog("[PY] Switching to Native core builder: ${e.message}")
         }
 
         nativeUnpackDeep(file.absolutePath, targetFolder.absolutePath, callback)
@@ -49,22 +49,22 @@ object PakEngine {
     suspend fun replaceAndRepack(folderName: String, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
         val unpackedFolder = File(dirUnpack, folderName)
         if (!unpackedFolder.exists()) {
-            callback.onLog("[ERROR] Directory not found: $folderName")
+            callback.onLog("[ERROR] Unpack directory missing: $folderName")
             return@withContext false
         }
 
-        callback.onLog("[REPLACE] Overwriting from Editor into hierarchy...")
+        callback.onLog("[REPLACE] Checking Editor folder for files...")
         var replacedCount = 0
         dirEditor.listFiles()?.forEach { editorFile ->
             unpackedFolder.walkTopDown().forEach { fileInTree ->
                 if (fileInTree.name.equals(editorFile.name, ignoreCase = true)) {
                     editorFile.copyTo(fileInTree, overwrite = true)
                     replacedCount++
-                    callback.onLog("🔄 [REPLACED] ${editorFile.name}")
+                    callback.onLog("🔄 [REPLACED] ${editorFile.name} -> ${fileInTree.relativeTo(unpackedFolder).path}")
                 }
             }
         }
-        callback.onLog("[INFO] Total modified assets replaced: $replacedCount")
+        callback.onLog("[INFO] Total modified files replaced: $replacedCount")
 
         val outputPak = File(dirRepack, "$folderName.pak")
         try {

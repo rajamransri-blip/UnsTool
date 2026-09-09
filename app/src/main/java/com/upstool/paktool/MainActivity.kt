@@ -59,7 +59,7 @@ fun TerminalUnpackerScreen() {
     var selectedFile by remember { mutableStateOf<File?>(null) }
     var unpackedFolders by remember { mutableStateOf<List<String>>(emptyList()) }
 
-    var terminalLogs by remember { mutableStateOf<List<String>>(listOf("[SYSTEM] Upstool Python & Native Zlib Engines Loaded.")) }
+    var terminalLogs by remember { mutableStateOf<List<String>>(listOf("[SYSTEM] Upstool Core Engine Ready.")) }
     var isBusy by remember { mutableStateOf(false) }
 
     var showOriginalDropdown by remember { mutableStateOf(false) }
@@ -191,9 +191,9 @@ fun TerminalUnpackerScreen() {
                 ) {
                     items(terminalLogs) { log ->
                         val logColor = when {
-                            log.startsWith("[ERROR]") || log.startsWith("[PY ERROR]") || log.startsWith("[REPACK ERROR]") -> Color(0xFFFF5252)
+                            log.startsWith("[ERROR]") || log.startsWith("[REPACK ERROR]") -> Color(0xFFFF5252)
                             log.startsWith("[SUCCESS]") || log.startsWith("[FINISHED]") -> Color(0xFF00E676)
-                            log.startsWith("[WARN]") || log.startsWith("[PY]") -> Color(0xFFFFB74D)
+                            log.startsWith("[WARN]") || log.startsWith("[UE4]") -> Color(0xFFFFB74D)
                             log.startsWith("📁") -> Color(0xFFFFD54F)
                             log.startsWith("📦") || log.startsWith("🔄") -> Color(0xFF80D8FF)
                             else -> Color(0xFFE0E0E0)
