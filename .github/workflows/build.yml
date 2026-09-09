@@ -25,14 +25,14 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Generate All Source Files
+      - name: Generate Complete Source Tree
         run: |
           mkdir -p gradle/wrapper
           mkdir -p app/src/main/cpp
           mkdir -p app/src/main/java/com/upstool/paktool
           mkdir -p app/src/main/res/values
 
-          # 1. gradle.properties (Fixes AndroidX & checkDebugAarMetadata error)
+          # 1. gradle.properties (Fixes AndroidX requirement & Memory)
           cat << 'EOF' > gradle.properties
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
           android.useAndroidX=true
@@ -40,7 +40,7 @@ jobs:
           kotlin.code.style=official
           EOF
 
-          # 2. Root settings.gradle.kts
+          # 2. settings.gradle.kts
           cat << 'EOF' > settings.gradle.kts
           pluginManagement {
               repositories {
@@ -147,7 +147,7 @@ jobs:
           }
           EOF
 
-          # 5. Strings Resource (app/src/main/res/values/strings.xml)
+          # 5. Strings resource
           cat << 'EOF' > app/src/main/res/values/strings.xml
           <resources>
               <string name="app_name">Upstool</string>
@@ -205,7 +205,7 @@ jobs:
           )
           EOF
 
-          # 8. C++ Engine Core (pak_engine.cpp)
+          # 8. Fixed C++ Engine with Real-Time Terminal Streaming
           cat << 'EOF' > app/src/main/cpp/pak_engine.cpp
           #include <jni.h>
           #include <string>
@@ -219,7 +219,7 @@ jobs:
 
           namespace fs = std::filesystem;
 
-          #define LOG_TAG "UpstoolNative"
+          #define LOG_TAG "UpstoolEngine"
           #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
           #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
@@ -246,7 +246,7 @@ jobs:
               int64_t  offset = 0;
               int64_t  size = 0;
               int64_t  uncompressedSize = 0;
-              int32_t  compressionMethod = 0;
+              int32_t  compressionMethod = 0; // 0 = None, 1 = Zlib
               uint8_t  hash[20] = {0};
               std::vector<FPakCompressedBlock> compressionBlocks;
               uint8_t  bEncrypted = 0;
@@ -261,13 +261,38 @@ jobs:
               }
           };
 
+          static void sendTerminalLog(JNIEnv* env, jobject callback, jmethodID logMethod, const std::string& msg) {
+              if (callback && logMethod) {
+                  jstring jmsg = env->NewStringUTF(msg.c_str());
+                  env->CallVoidMethod(callback, logMethod, jmsg);
+                  env->DeleteLocalRef(jmsg);
+              }
+          }
+
           static std::string readFString(std::ifstream& stream) {
               int32_t length = 0;
-              stream.read(reinterpret_cast<char*>(&length), sizeof(int32_t));
-              if (length <= 0) return "";
+              if (!stream.read(reinterpret_cast<char*>(&length), sizeof(int32_t))) return "";
+              if (length == 0) return "";
+              if (length > 1048576 || length < -1048576) return "";
+
+              if (length < 0) {
+                  int32_t ucs2Len = -length;
+                  std::vector<uint16_t> wbuf(ucs2Len);
+                  stream.read(reinterpret_cast<char*>(wbuf.data()), ucs2Len * sizeof(uint16_t));
+                  std::string res;
+                  res.reserve(ucs2Len);
+                  for (auto c : wbuf) {
+                      if (c != 0) res.push_back(static_cast<char>(c));
+                  }
+                  while (!res.empty() && res.back() == '\0') res.pop_back();
+                  return res;
+              }
+
               std::vector<char> buffer(length);
               stream.read(buffer.data(), length);
-              return std::string(buffer.data());
+              std::string res(buffer.data(), length);
+              while (!res.empty() && res.back() == '\0') res.pop_back();
+              return res;
           }
 
           static void writeFString(std::ofstream& stream, const std::string& str) {
@@ -287,9 +312,11 @@ jobs:
               if (entry.compressionMethod != 0) {
                   int32_t blockCount = 0;
                   stream.read(reinterpret_cast<char*>(&blockCount), sizeof(int32_t));
-                  entry.compressionBlocks.resize(blockCount);
-                  for (int32_t i = 0; i < blockCount; ++i) {
-                      stream.read(reinterpret_cast<char*>(&entry.compressionBlocks[i]), sizeof(FPakCompressedBlock));
+                  if (blockCount > 0 && blockCount < 100000) {
+                      entry.compressionBlocks.resize(blockCount);
+                      for (int32_t i = 0; i < blockCount; ++i) {
+                          stream.read(reinterpret_cast<char*>(&entry.compressionBlocks[i]), sizeof(FPakCompressedBlock));
+                      }
                   }
               }
               stream.read(reinterpret_cast<char*>(&entry.bEncrypted), sizeof(uint8_t));
@@ -329,17 +356,24 @@ jobs:
           }
 
           extern "C" JNIEXPORT jboolean JNICALL
-          Java_com_upstool_paktool_PakEngine_nativeUnpackFull(
+          Java_com_upstool_paktool_PakEngine_nativeUnpackPak(
               JNIEnv* env,
               jobject,
               jstring jPakPath,
-              jstring jOutputDir
+              jstring jOutputDir,
+              jobject jCallback
           ) {
+              jclass cbClass = env->GetObjectClass(jCallback);
+              jmethodID logMethod = env->GetMethodID(cbClass, "onLog", "(Ljava/lang/String;)V");
+
               const char* cPakPath = env->GetStringUTFChars(jPakPath, nullptr);
               const char* cOutputDir = env->GetStringUTFChars(jOutputDir, nullptr);
 
+              sendTerminalLog(env, jCallback, logMethod, "[INIT] Opening archive: " + std::string(cPakPath));
+
               std::ifstream file(cPakPath, std::ios::binary | std::ios::ate);
               if (!file.is_open()) {
+                  sendTerminalLog(env, jCallback, logMethod, "[ERROR] Cannot open source archive file.");
                   env->ReleaseStringUTFChars(jPakPath, cPakPath);
                   env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
                   return JNI_FALSE;
@@ -347,13 +381,15 @@ jobs:
 
               std::streamsize fileSize = file.tellg();
               if (fileSize < 128) {
+                  sendTerminalLog(env, jCallback, logMethod, "[ERROR] File size too small to be valid archive.");
                   file.close();
                   env->ReleaseStringUTFChars(jPakPath, cPakPath);
                   env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
                   return JNI_FALSE;
               }
 
-              size_t scanSize = std::min(fileSize, static_cast<std::streamsize>(256));
+              // Scan last 64 KB backwards for PAK_MAGIC
+              size_t scanSize = std::min(fileSize, static_cast<std::streamsize>(65536));
               std::vector<uint8_t> buffer(scanSize);
               file.seekg(fileSize - scanSize);
               file.read(reinterpret_cast<char*>(buffer.data()), scanSize);
@@ -367,29 +403,51 @@ jobs:
               }
 
               if (magicOffset == -1) {
+                  sendTerminalLog(env, jCallback, logMethod, "[ERROR] Unreal PAK Magic bytes (0x5A6F12E1) not found.");
                   file.close();
                   env->ReleaseStringUTFChars(jPakPath, cPakPath);
                   env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
                   return JNI_FALSE;
               }
 
-              FPakInfo info;
-              file.seekg(magicOffset - (sizeof(FPakInfo) - sizeof(uint32_t)));
-              file.read(reinterpret_cast<char*>(&info), sizeof(FPakInfo));
+              // In UE4: Magic is followed by Version, IndexOffset, IndexSize
+              file.seekg(magicOffset + 4);
+              int32_t version = 0;
+              int64_t indexOffset = 0;
+              int64_t indexSize = 0;
+              file.read(reinterpret_cast<char*>(&version), sizeof(int32_t));
+              file.read(reinterpret_cast<char*>(&indexOffset), sizeof(int64_t));
+              file.read(reinterpret_cast<char*>(&indexSize), sizeof(int64_t));
 
-              file.seekg(info.indexOffset);
+              sendTerminalLog(env, jCallback, logMethod, "[INDEX] Found PAK v" + std::to_string(version) + " | Offset: " + std::to_string(indexOffset));
+
+              if (indexOffset <= 0 || indexOffset >= fileSize) {
+                  sendTerminalLog(env, jCallback, logMethod, "[ERROR] Corrupt or invalid Index Table offset.");
+                  file.close();
+                  env->ReleaseStringUTFChars(jPakPath, cPakPath);
+                  env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
+                  return JNI_FALSE;
+              }
+
+              file.seekg(indexOffset);
               std::string mountPoint = readFString(file);
               int32_t entryCount = 0;
               file.read(reinterpret_cast<char*>(&entryCount), sizeof(int32_t));
 
+              sendTerminalLog(env, jCallback, logMethod, "[TREE] Mount: " + mountPoint + " | Total Files: " + std::to_string(entryCount));
+
+              int successCount = 0;
               for (int32_t i = 0; i < entryCount; ++i) {
                   std::string internalPath = readFString(file);
                   FPakEntry entry = readEntry(file);
 
                   std::string cleanRelPath = internalPath;
-                  while (cleanRelPath.rfind("../", 0) == 0) {
-                      cleanRelPath.erase(0, 3);
+                  while (cleanRelPath.rfind("../", 0) == 0) cleanRelPath.erase(0, 3);
+                  while (cleanRelPath.rfind("..\\", 0) == 0) cleanRelPath.erase(0, 3);
+                  while (!cleanRelPath.empty() && (cleanRelPath.front() == '/' || cleanRelPath.front() == '\\')) {
+                      cleanRelPath.erase(0, 1);
                   }
+                  std::replace(cleanRelPath.begin(), cleanRelPath.end(), '\\', '/');
 
                   fs::path destPath = fs::path(cOutputDir) / cleanRelPath;
                   fs::create_directories(destPath.parent_path());
@@ -431,26 +489,41 @@ jobs:
 
                   outFile.close();
                   file.seekg(savedIndexPos);
+                  successCount++;
+
+                  // Terminal stream update every 5 files or on uasset/uexp
+                  if (i % 5 == 0 || cleanRelPath.find(".uasset") != std::string::npos || cleanRelPath.find(".uexp") != std::string::npos) {
+                      sendTerminalLog(env, jCallback, logMethod, "📁 [" + std::to_string(i + 1) + "/" + std::to_string(entryCount) + "] " + cleanRelPath);
+                  }
               }
 
               file.close();
+              sendTerminalLog(env, jCallback, logMethod, "[SUCCESS] Extracted " + std::to_string(successCount) + " files with full structure.");
+
               env->ReleaseStringUTFChars(jPakPath, cPakPath);
               env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
               return JNI_TRUE;
           }
 
           extern "C" JNIEXPORT jboolean JNICALL
-          Java_com_upstool_paktool_PakEngine_nativeRepack(
+          Java_com_upstool_paktool_PakEngine_nativeRepackPak(
               JNIEnv* env,
               jobject,
               jstring jSourceDir,
-              jstring jOutputPak
+              jstring jOutputPak,
+              jobject jCallback
           ) {
+              jclass cbClass = env->GetObjectClass(jCallback);
+              jmethodID logMethod = env->GetMethodID(cbClass, "onLog", "(Ljava/lang/String;)V");
+
               const char* cSrc = env->GetStringUTFChars(jSourceDir, nullptr);
               const char* cOut = env->GetStringUTFChars(jOutputPak, nullptr);
 
+              sendTerminalLog(env, jCallback, logMethod, "[REPACK] Serializing tree from: " + std::string(cSrc));
+
               std::ofstream pak(cOut, std::ios::binary | std::ios::trunc);
               if (!pak.is_open()) {
+                  sendTerminalLog(env, jCallback, logMethod, "[ERROR] Cannot create output archive: " + std::string(cOut));
                   env->ReleaseStringUTFChars(jSourceDir, cSrc);
                   env->ReleaseStringUTFChars(jOutputPak, cOut);
                   return JNI_FALSE;
@@ -482,6 +555,7 @@ jobs:
                   srcStream.close();
 
                   entries.push_back(entry);
+                  sendTerminalLog(env, jCallback, logMethod, "📦 [PACK] " + relPath);
               }
 
               int64_t indexOffset = pak.tellp();
@@ -505,13 +579,15 @@ jobs:
               pak.write(reinterpret_cast<const char*>(&footer), sizeof(FPakInfo));
 
               pak.close();
+              sendTerminalLog(env, jCallback, logMethod, "[FINISHED] Repacked " + std::to_string(totalFiles) + " files -> " + std::string(cOut));
+
               env->ReleaseStringUTFChars(jSourceDir, cSrc);
               env->ReleaseStringUTFChars(jOutputPak, cOut);
               return JNI_TRUE;
           }
           EOF
 
-          # 9. PakEngine.kt
+          # 9. PakEngine.kt with ZIP/OBB support and Callback
           cat << 'EOF' > app/src/main/java/com/upstool/paktool/PakEngine.kt
           package com.upstool.paktool
 
@@ -519,47 +595,112 @@ jobs:
           import kotlinx.coroutines.Dispatchers
           import kotlinx.coroutines.withContext
           import java.io.File
+          import java.io.FileInputStream
+          import java.io.FileOutputStream
+          import java.util.zip.ZipInputStream
+
+          interface TerminalCallback {
+              fun onLog(line: String)
+          }
 
           object PakEngine {
               init {
                   System.loadLibrary("upstool_native")
               }
 
-              private external fun nativeUnpackFull(pakPath: String, outputDir: String): Boolean
-              private external fun nativeRepack(sourceDir: String, outputPak: String): Boolean
+              private external fun nativeUnpackPak(pakPath: String, outputDir: String, callback: TerminalCallback): Boolean
+              private external fun nativeRepackPak(sourceDir: String, outputPak: String, callback: TerminalCallback): Boolean
 
               private val baseDir = File(Environment.getExternalStorageDirectory(), "Upstool")
-
               val dirOriginal = File(baseDir, "Original").apply { mkdirs() }
               val dirEditor   = File(baseDir, "Editor").apply { mkdirs() }
               val dirUnpack   = File(baseDir, "Unpack").apply { mkdirs() }
               val dirRepack   = File(baseDir, "Repack").apply { mkdirs() }
 
-              suspend fun unpackArchive(archiveFile: File): Boolean = withContext(Dispatchers.IO) {
-                  val outFolder = File(dirUnpack, archiveFile.nameWithoutExtension)
-                  if (!outFolder.exists()) outFolder.mkdirs()
-                  nativeUnpackFull(archiveFile.absolutePath, outFolder.absolutePath)
+              suspend fun unpackArchive(file: File, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
+                  val targetFolder = File(dirUnpack, file.nameWithoutExtension).apply { mkdirs() }
+
+                  // If file is an OBB or ZIP format (Magic: PK\x03\x04)
+                  val isZip = try {
+                      FileInputStream(file).use { fis ->
+                          val header = ByteArray(4)
+                          fis.read(header)
+                          header[0] == 0x50.toByte() && header[1] == 0x4B.toByte()
+                      }
+                  } catch (e: Exception) {
+                      false
+                  }
+
+                  if (isZip) {
+                      callback.onLog("[OBB/ZIP] Detected ZIP format. Extracting...")
+                      return@withContext unpackZip(file, targetFolder, callback)
+                  } else {
+                      return@withContext nativeUnpackPak(file.absolutePath, targetFolder.absolutePath, callback)
+                  }
               }
 
-              suspend fun replaceAndRepack(unpackedFolderName: String): Boolean = withContext(Dispatchers.IO) {
-                  val targetUnpackDir = File(dirUnpack, unpackedFolderName)
-                  if (!targetUnpackDir.exists()) return@withContext false
+              private fun unpackZip(zipFile: File, targetDir: File, callback: TerminalCallback): Boolean {
+                  try {
+                      ZipInputStream(FileInputStream(zipFile)).use { zis ->
+                          var entry = zis.nextEntry
+                          var count = 0
+                          val buffer = ByteArray(65536)
+                          while (entry != null) {
+                              val newFile = File(targetDir, entry.name)
+                              if (entry.isDirectory) {
+                                  newFile.mkdirs()
+                              } else {
+                                  newFile.parentFile?.mkdirs()
+                                  FileOutputStream(newFile).use { fos ->
+                                      var len: Int
+                                      while (zis.read(buffer).also { len = it } > 0) {
+                                          fos.write(buffer, 0, len)
+                                      }
+                                  }
+                                  count++
+                                  if (count % 5 == 0 || newFile.name.contains("uasset")) {
+                                      callback.onLog("📁 [OBB] Extracted: ${entry.name}")
+                                  }
+                              }
+                              zis.closeEntry()
+                              entry = zis.nextEntry
+                          }
+                          callback.onLog("[SUCCESS] OBB unpacked total $count files.")
+                          return true
+                      }
+                  } catch (e: Exception) {
+                      callback.onLog("[ERROR] OBB extract error: ${e.message}")
+                      return false
+                  }
+              }
 
-                  dirEditor.listFiles()?.forEach { editFile ->
-                      targetUnpackDir.walkTopDown().forEach { extractedFile ->
-                          if (extractedFile.name.equals(editFile.name, ignoreCase = true)) {
-                              editFile.copyTo(extractedFile, overwrite = true)
+              suspend fun replaceAndRepack(folderName: String, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
+                  val unpackedFolder = File(dirUnpack, folderName)
+                  if (!unpackedFolder.exists()) {
+                      callback.onLog("[ERROR] Unpacked directory not found: $folderName")
+                      return@withContext false
+                  }
+
+                  callback.onLog("[REPLACE] Checking Editor folder for modifications...")
+                  var replacedCount = 0
+                  dirEditor.listFiles()?.forEach { editorFile ->
+                      unpackedFolder.walkTopDown().forEach { fileInTree ->
+                          if (fileInTree.name.equals(editorFile.name, ignoreCase = true)) {
+                              editorFile.copyTo(fileInTree, overwrite = true)
+                              replacedCount++
+                              callback.onLog("🔄 [REPLACED] ${editorFile.name} -> ${fileInTree.relativeTo(unpackedFolder).path}")
                           }
                       }
                   }
 
-                  val outRepackedPak = File(dirRepack, "$unpackedFolderName.pak")
-                  nativeRepack(targetUnpackDir.absolutePath, outRepackedPak.absolutePath)
+                  callback.onLog("[INFO] Total replaced files: $replacedCount")
+                  val outputPak = File(dirRepack, "$folderName.pak")
+                  nativeRepackPak(unpackedFolder.absolutePath, outputPak.absolutePath, callback)
               }
           }
           EOF
 
-          # 10. MainActivity.kt (UI)
+          # 10. MainActivity.kt (UI with Picker, Terminal Screen & Action Buttons)
           cat << 'EOF' > app/src/main/java/com/upstool/paktool/MainActivity.kt
           package com.upstool.paktool
 
@@ -571,24 +712,22 @@ jobs:
           import android.provider.Settings
           import androidx.activity.ComponentActivity
           import androidx.activity.compose.setContent
-          import androidx.compose.animation.AnimatedVisibility
           import androidx.compose.foundation.background
           import androidx.compose.foundation.border
           import androidx.compose.foundation.clickable
           import androidx.compose.foundation.layout.*
           import androidx.compose.foundation.lazy.LazyColumn
           import androidx.compose.foundation.lazy.items
+          import androidx.compose.foundation.lazy.rememberLazyListState
           import androidx.compose.foundation.shape.RoundedCornerShape
           import androidx.compose.material.icons.Icons
-          import androidx.compose.material.icons.filled.Archive
-          import androidx.compose.material.icons.filled.Folder
+          import androidx.compose.material.icons.filled.ArrowDropDown
           import androidx.compose.material.icons.filled.Refresh
           import androidx.compose.material.icons.filled.Warning
           import androidx.compose.material3.*
           import androidx.compose.runtime.*
           import androidx.compose.ui.Alignment
           import androidx.compose.ui.Modifier
-          import androidx.compose.ui.draw.clip
           import androidx.compose.ui.graphics.Color
           import androidx.compose.ui.platform.LocalContext
           import androidx.compose.ui.text.font.FontFamily
@@ -603,8 +742,8 @@ jobs:
                   super.onCreate(savedInstanceState)
                   setContent {
                       MaterialTheme(colorScheme = darkColorScheme()) {
-                          Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0D0D0D)) {
-                              UpstoolScreen()
+                          Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0A0A0A)) {
+                              TerminalUnpackerScreen()
                           }
                       }
                   }
@@ -613,38 +752,52 @@ jobs:
 
           @OptIn(ExperimentalMaterial3Api::class)
           @Composable
-          fun UpstoolScreen() {
+          fun TerminalUnpackerScreen() {
               val context = LocalContext.current
               val scope = rememberCoroutineScope()
+              val listState = rememberLazyListState()
 
               var originalFiles by remember { mutableStateOf<List<File>>(emptyList()) }
-              var editorFiles by remember { mutableStateOf<List<String>>(emptyList()) }
+              var selectedFile by remember { mutableStateOf<File?>(null) }
               var unpackedFolders by remember { mutableStateOf<List<String>>(emptyList()) }
-              var repackedFiles by remember { mutableStateOf<List<String>>(emptyList()) }
+              var selectedUnpackFolder by remember { mutableStateOf("") }
 
+              var terminalLogs by remember { mutableStateOf<List<String>>(listOf("[SYSTEM] Upstool Pak Engine Initialized.")) }
               var isBusy by remember { mutableStateOf(false) }
-              var statusLog by remember { mutableStateOf("Ready") }
-              var currentAction by remember { mutableStateOf("") }
 
-              var showUnpackDialog by remember { mutableStateOf(false) }
-              var showRepackDialog by remember { mutableStateOf(false) }
+              var showOriginalDropdown by remember { mutableStateOf(false) }
+              var showRepackDropdown by remember { mutableStateOf(false) }
 
-              fun refresh() {
-                  val orig = PakEngine.dirOriginal.listFiles()
-                      ?.filter { it.isFile && (it.extension in listOf("pak", "obb") || it.name.contains("patch")) }
-                      ?.toList() ?: emptyList()
-
-                  val edit = PakEngine.dirEditor.listFiles()?.map { it.name } ?: emptyList()
-                  val unp = PakEngine.dirUnpack.listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
-                  val rep = PakEngine.dirRepack.listFiles()?.map { it.name } ?: emptyList()
-
-                  originalFiles = orig
-                  editorFiles = edit
-                  unpackedFolders = unp
-                  repackedFiles = rep
+              fun addLog(msg: String) {
+                  terminalLogs = terminalLogs + msg
               }
 
-              LaunchedEffect(Unit) { refresh() }
+              fun refreshFiles() {
+                  val originals = PakEngine.dirOriginal.listFiles()
+                      ?.filter { it.isFile && (it.extension in listOf("pak", "obb") || it.name.contains("patch")) }
+                      ?.toList() ?: emptyList()
+                  originalFiles = originals
+                  if (selectedFile == null && originals.isNotEmpty()) {
+                      selectedFile = originals.first()
+                  }
+
+                  val unp = PakEngine.dirUnpack.listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
+                  unpackedFolders = unp
+                  if (selectedUnpackFolder.isEmpty() && unp.isNotEmpty()) {
+                      selectedUnpackFolder = unp.first()
+                  }
+              }
+
+              LaunchedEffect(Unit) {
+                  refreshFiles()
+              }
+
+              // Auto-scroll terminal to bottom when new logs arrive
+              LaunchedEffect(terminalLogs.size) {
+                  if (terminalLogs.isNotEmpty()) {
+                      listState.animateScrollToItem(terminalLogs.size - 1)
+                  }
+              }
 
               val hasStoragePermission = remember {
                   derivedStateOf {
@@ -654,32 +807,42 @@ jobs:
                   }
               }
 
+              val callback = remember {
+                  object : TerminalCallback {
+                      override fun onLog(line: String) {
+                          scope.launch { addLog(line) }
+                      }
+                  }
+              }
+
               Scaffold(
                   topBar = {
                       TopAppBar(
-                          title = { Text("UPSTOOL PAK ENGINE", fontWeight = FontWeight.Black) },
+                          title = { Text("UPSTOOL PAK ENGINE", fontWeight = FontWeight.Bold, letterSpacing = 1.sp) },
                           actions = {
-                              IconButton(onClick = { refresh() }, enabled = !isBusy) {
+                              IconButton(onClick = { refreshFiles(); addLog("[STATUS] Storage refreshed.") }, enabled = !isBusy) {
                                   Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color(0xFF00E5FF))
                               }
                           },
                           colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF141414))
                       )
-                  }
+                  },
+                  containerColor = Color(0xFF0A0A0A)
               ) { padding ->
                   Column(
                       modifier = Modifier
                           .fillMaxSize()
                           .padding(padding)
-                          .padding(16.dp),
-                      verticalArrangement = Arrangement.spacedBy(12.dp)
+                          .padding(14.dp),
+                      verticalArrangement = Arrangement.spacedBy(10.dp)
                   ) {
+                      // Permission Warning
                       if (!hasStoragePermission.value && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                           Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF3B1212))) {
-                              Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                              Row(modifier = Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                                   Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFF5252))
                                   Spacer(modifier = Modifier.width(8.dp))
-                                  Text("Storage Permission Needed", color = Color.White, modifier = Modifier.weight(1f))
+                                  Text("All Files Access Required", color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f))
                                   Button(
                                       onClick = {
                                           val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
@@ -688,144 +851,175 @@ jobs:
                                           context.startActivity(intent)
                                       },
                                       colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252))
-                                  ) { Text("Fix") }
+                                  ) { Text("Allow", fontSize = 11.sp) }
                               }
                           }
                       }
 
-                      AnimatedVisibility(visible = isBusy) {
-                          Column {
-                              Text(currentAction, color = Color(0xFF00E5FF), fontSize = 12.sp)
+                      // Selection Header (Choose PAK/OBB)
+                      Card(
+                          modifier = Modifier.fillMaxWidth(),
+                          colors = CardDefaults.cardColors(containerColor = Color(0xFF181818)),
+                          shape = RoundedCornerShape(8.dp)
+                      ) {
+                          Column(modifier = Modifier.padding(12.dp)) {
+                              Text("SELECT TARGET ARCHIVE (Original Folder):", color = Color.Gray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                               Spacer(modifier = Modifier.height(4.dp))
-                              LinearProgressIndicator(
-                                  modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
-                                  color = Color(0xFF00E5FF)
-                              )
+                              Row(
+                                  modifier = Modifier
+                                      .fillMaxWidth()
+                                      .background(Color(0xFF222222), RoundedCornerShape(6.dp))
+                                      .clickable { showOriginalDropdown = true }
+                                      .padding(horizontal = 12.dp, vertical = 10.dp),
+                                  horizontalArrangement = Arrangement.SpaceBetween,
+                                  verticalAlignment = Alignment.CenterVertically
+                              ) {
+                                  Text(
+                                      text = selectedFile?.name ?: if (originalFiles.isEmpty()) "No .pak/.obb in /Original" else "Choose File",
+                                      color = if (selectedFile != null) Color(0xFF00E5FF) else Color.LightGray,
+                                      fontSize = 13.sp,
+                                      fontFamily = FontFamily.Monospace,
+                                      maxLines = 1
+                                  )
+                                  Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Color.White)
+                              }
                           }
                       }
 
-                      FolderStat("Original Pak/Obb", originalFiles.size, "/sdcard/Upstool/Original", Color(0xFF80D8FF))
-                      FolderStat("Editor Assets", editorFiles.size, "/sdcard/Upstool/Editor", Color(0xFFFFD180))
-                      FolderStat("Unpacked Hierarchy", unpackedFolders.size, "/sdcard/Upstool/Unpack", Color(0xFFB388FF))
-                      FolderStat("Repacked Pak", repackedFiles.size, "/sdcard/Upstool/Repack", Color(0xFFA7FFEB))
-
-                      Spacer(modifier = Modifier.weight(1f))
-
-                      Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                          Button(
-                              onClick = { showUnpackDialog = true },
-                              enabled = !isBusy && originalFiles.isNotEmpty(),
-                              modifier = Modifier.weight(1f).height(52.dp),
-                              shape = RoundedCornerShape(10.dp),
-                              colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0288D1))
-                          ) { Text("UNPACK (CHOOSE)", fontWeight = FontWeight.Bold) }
-
-                          Button(
-                              onClick = { showRepackDialog = true },
-                              enabled = !isBusy && unpackedFolders.isNotEmpty() && editorFiles.isNotEmpty(),
-                              modifier = Modifier.weight(1f).height(52.dp),
-                              shape = RoundedCornerShape(10.dp),
-                              colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00C853))
-                          ) { Text("REPACK (CHOOSE)", fontWeight = FontWeight.Bold) }
-                      }
-
+                      // LIVE TERMINAL VIEW
                       Box(
                           modifier = Modifier
                               .fillMaxWidth()
-                              .border(1.dp, Color(0xFF262626), RoundedCornerShape(8.dp))
-                              .background(Color(0xFF161616))
-                              .padding(12.dp)
+                              .weight(1f)
+                              .background(Color(0xFF000000), RoundedCornerShape(8.dp))
+                              .border(1.dp, Color(0xFF242424), RoundedCornerShape(8.dp))
+                              .padding(10.dp)
                       ) {
-                          Text("> $statusLog", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Color(0xFFEEEEEE))
+                          LazyColumn(
+                              state = listState,
+                              modifier = Modifier.fillMaxSize()
+                          ) {
+                              items(terminalLogs) { log ->
+                                  val logColor = when {
+                                      log.startsWith("[ERROR]") -> Color(0xFFFF5252)
+                                      log.startsWith("[SUCCESS]") || log.startsWith("[FINISHED]") -> Color(0xFF00E676)
+                                      log.startsWith("[INIT]") || log.startsWith("[INDEX]") -> Color(0xFF00E5FF)
+                                      log.startsWith("📁") -> Color(0xFFFFD54F)
+                                      log.startsWith("📦") || log.startsWith("🔄") -> Color(0xFF80D8FF)
+                                      else -> Color(0xFFE0E0E0)
+                                  }
+                                  Text(
+                                      text = log,
+                                      color = logColor,
+                                      fontSize = 11.sp,
+                                      fontFamily = FontFamily.Monospace,
+                                      lineHeight = 15.sp
+                                  )
+                              }
+                          }
+                      }
+
+                      // UNPACK & REPACK ACTION BUTTONS
+                      Row(
+                          modifier = Modifier.fillMaxWidth(),
+                          horizontalArrangement = Arrangement.spacedBy(10.dp)
+                      ) {
+                          Button(
+                              onClick = {
+                                  selectedFile?.let { target ->
+                                      isBusy = true
+                                      addLog("[START] Preparing unpack: ${target.name}")
+                                      scope.launch {
+                                          val ok = PakEngine.unpackArchive(target, callback)
+                                          refreshFiles()
+                                          isBusy = false
+                                          addLog(if (ok) "[COMPLETE] Unpacked into /sdcard/Upstool/Unpack/${target.nameWithoutExtension}" else "[FAILED] Unpack operation failed.")
+                                      }
+                                  }
+                              },
+                              enabled = !isBusy && selectedFile != null,
+                              modifier = Modifier.weight(1f).height(50.dp),
+                              shape = RoundedCornerShape(8.dp),
+                              colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0288D1))
+                          ) {
+                              Text("UNPACK TO TREE", fontWeight = FontWeight.Bold)
+                          }
+
+                          Button(
+                              onClick = { showRepackDropdown = true },
+                              enabled = !isBusy && unpackedFolders.isNotEmpty(),
+                              modifier = Modifier.weight(1f).height(50.dp),
+                              shape = RoundedCornerShape(8.dp),
+                              colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00C853))
+                          ) {
+                              Text("REPACK CHOSEN", fontWeight = FontWeight.Bold)
+                          }
                       }
                   }
               }
 
-              if (showUnpackDialog) {
+              // Dropdown Dialog for Original Pak Chooser
+              if (showOriginalDropdown) {
                   AlertDialog(
-                      onDismissRequest = { showUnpackDialog = false },
+                      onDismissRequest = { showOriginalDropdown = false },
                       title = { Text("Select Archive to Unpack") },
                       text = {
                           LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
                               items(originalFiles) { file ->
-                                  Row(
-                                      modifier = Modifier.fillMaxWidth().clickable {
-                                          showUnpackDialog = false
-                                          isBusy = true
-                                          currentAction = "Unpacking with Zlib: ${file.name}"
-                                          scope.launch {
-                                              val ok = PakEngine.unpackArchive(file)
-                                              refresh()
-                                              isBusy = false
-                                              statusLog = if (ok) "Unpack successful: ${file.name}" else "Unpack failed"
+                                  Text(
+                                      text = file.name,
+                                      modifier = Modifier
+                                          .fillMaxWidth()
+                                          .clickable {
+                                              selectedFile = file
+                                              showOriginalDropdown = false
+                                              addLog("[SELECTED] ${file.name}")
                                           }
-                                      }.padding(vertical = 10.dp),
-                                      verticalAlignment = Alignment.CenterVertically
-                                  ) {
-                                      Icon(Icons.Default.Archive, contentDescription = null, tint = Color(0xFF00E5FF))
-                                      Spacer(modifier = Modifier.width(10.dp))
-                                      Text(file.name, fontSize = 13.sp, maxLines = 1)
-                                  }
+                                          .padding(vertical = 12.dp),
+                                      fontSize = 13.sp,
+                                      fontFamily = FontFamily.Monospace
+                                  )
                               }
                           }
                       },
                       confirmButton = {},
-                      dismissButton = { TextButton(onClick = { showUnpackDialog = false }) { Text("Cancel") } }
+                      dismissButton = { TextButton(onClick = { showOriginalDropdown = false }) { Text("Cancel") } }
                   )
               }
 
-              if (showRepackDialog) {
+              // Dropdown Dialog for Repack Directory Chooser
+              if (showRepackDropdown) {
                   AlertDialog(
-                      onDismissRequest = { showRepackDialog = false },
-                      title = { Text("Select Folder to Repack") },
+                      onDismissRequest = { showRepackDropdown = false },
+                      title = { Text("Select Folder to Replace & Repack") },
                       text = {
                           LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
-                              items(unpackedFolders) { folder ->
-                                  Row(
-                                      modifier = Modifier.fillMaxWidth().clickable {
-                                          showRepackDialog = false
-                                          isBusy = true
-                                          currentAction = "Injecting Editor files into: $folder"
-                                          scope.launch {
-                                              val ok = PakEngine.replaceAndRepack(folder)
-                                              refresh()
-                                              isBusy = false
-                                              statusLog = if (ok) "Repack completed: $folder.pak" else "Repack failed"
+                              items(unpackedFolders) { folderName ->
+                                  Text(
+                                      text = folderName,
+                                      modifier = Modifier
+                                          .fillMaxWidth()
+                                          .clickable {
+                                              showRepackDropdown = false
+                                              isBusy = true
+                                              addLog("[START] Repacking folder: $folderName")
+                                              scope.launch {
+                                                  val ok = PakEngine.replaceAndRepack(folderName, callback)
+                                                  refreshFiles()
+                                                  isBusy = false
+                                                  addLog(if (ok) "[COMPLETE] Repacked -> /sdcard/Upstool/Repack/$folderName.pak" else "[FAILED] Repack failed.")
+                                              }
                                           }
-                                      }.padding(vertical = 10.dp),
-                                      verticalAlignment = Alignment.CenterVertically
-                                  ) {
-                                      Icon(Icons.Default.Folder, contentDescription = null, tint = Color(0xFF69F0AE))
-                                      Spacer(modifier = Modifier.width(10.dp))
-                                      Text(folder, fontSize = 13.sp, maxLines = 1)
-                                  }
+                                          .padding(vertical = 12.dp),
+                                      fontSize = 13.sp,
+                                      fontFamily = FontFamily.Monospace
+                                  )
                               }
                           }
                       },
                       confirmButton = {},
-                      dismissButton = { TextButton(onClick = { showRepackDialog = false }) { Text("Cancel") } }
+                      dismissButton = { TextButton(onClick = { showRepackDropdown = false }) { Text("Cancel") } }
                   )
-              }
-          }
-
-          @Composable
-          fun FolderStat(title: String, count: Int, path: String, accent: Color) {
-              Card(
-                  modifier = Modifier.fillMaxWidth(),
-                  shape = RoundedCornerShape(8.dp),
-                  colors = CardDefaults.cardColors(containerColor = Color(0xFF181818))
-              ) {
-                  Row(
-                      modifier = Modifier.padding(12.dp),
-                      verticalAlignment = Alignment.CenterVertically,
-                      horizontalArrangement = Arrangement.SpaceBetween
-                  ) {
-                      Column {
-                          Text(title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                          Text(path, color = Color.Gray, fontSize = 11.sp)
-                      }
-                      Text("$count items", color = accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                  }
               }
           }
           EOF
@@ -843,7 +1037,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No new changes to commit."
           else
-            git commit -m "Auto-generate full Upstool source tree [skip ci]"
+            git commit -m "Fix PAK engine, live terminal UI, and OBB support [skip ci]"
             git push origin HEAD:${{ github.ref_name }}
           fi
 
