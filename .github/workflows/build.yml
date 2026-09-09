@@ -25,32 +25,38 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Python 3.10 for Chaquopy
+      - name: Setup Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Generate Official Gradle 8.5 Wrapper Safely
-        run: |
-          TMP_DIR=$(mktemp -d)
-          echo 'rootProject.name = "wrapper-init"' > "$TMP_DIR/settings.gradle"
-          touch "$TMP_DIR/build.gradle"
-          (cd "$TMP_DIR" && gradle wrapper --gradle-version 8.5 --distribution-type bin)
-          mkdir -p gradle/wrapper
-          cp "$TMP_DIR/gradlew" ./gradlew
-          cp "$TMP_DIR/gradle/wrapper/gradle-wrapper.jar" ./gradle/wrapper/
-          cp "$TMP_DIR/gradle/wrapper/gradle-wrapper.properties" ./gradle/wrapper/
-          chmod +x ./gradlew
-          rm -rf "$TMP_DIR"
+      - name: Cache Gradle
+        uses: actions/cache@v3
+        with:
+          path: ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
+          restore-keys: ${{ runner.os }}-gradle-
 
-      - name: Generate Complete Source Tree
+      - name: Cache NDK
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.ANDROID_HOME }}/ndk/26.1.10909125
+          key: ndk-26.1.10909125
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+
+      - name: Generate Full Source Tree with bgmi.csv Manifest
         run: |
           mkdir -p app/src/main/cpp
           mkdir -p app/src/main/python
           mkdir -p app/src/main/java/com/upstool/paktool
           mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/assets
 
-          # 1. gradle.properties
+          # ========== gradle.properties ==========
           cat << 'EOF' > gradle.properties
           org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8
           android.useAndroidX=true
@@ -58,7 +64,7 @@ jobs:
           kotlin.code.style=official
           EOF
 
-          # 2. settings.gradle
+          # ========== settings.gradle ==========
           cat << 'EOF' > settings.gradle
           pluginManagement {
               repositories {
@@ -80,7 +86,7 @@ jobs:
           include ':app'
           EOF
 
-          # 3. Root build.gradle
+          # ========== build.gradle (root) ==========
           cat << 'EOF' > build.gradle
           buildscript {
               repositories {
@@ -96,7 +102,7 @@ jobs:
           }
           EOF
 
-          # 4. app/build.gradle (Chaquopy + PyCryptodome + Zstandard)
+          # ========== app/build.gradle ==========
           cat << 'EOF' > app/build.gradle
           apply plugin: 'com.android.application'
           apply plugin: 'org.jetbrains.kotlin.android'
@@ -184,14 +190,14 @@ jobs:
 
           touch app/proguard-rules.pro
 
-          # 5. Strings Resource
+          # ========== strings.xml ==========
           cat << 'EOF' > app/src/main/res/values/strings.xml
           <resources>
               <string name="app_name">Upstool</string>
           </resources>
           EOF
 
-          # 6. AndroidManifest.xml
+          # ========== AndroidManifest.xml ==========
           cat << 'EOF' > app/src/main/AndroidManifest.xml
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -222,38 +228,31 @@ jobs:
           </manifest>
           EOF
 
-          # 7. CMakeLists.txt
+          # ========== CMakeLists.txt ==========
           cat << 'EOF' > app/src/main/cpp/CMakeLists.txt
           cmake_minimum_required(VERSION 3.22.1)
           project("upstool_native")
-
           set(CMAKE_CXX_STANDARD 17)
-
-          add_library(upstool_native SHARED
-              pak_engine.cpp
-          )
-
+          add_library(upstool_native SHARED pak_engine.cpp)
           find_library(log-lib log)
-
-          target_link_libraries(upstool_native
-              ${log-lib}
-              z
-          )
+          target_link_libraries(upstool_native ${log-lib} z)
           EOF
 
-          # 8. C++ Fallback Engine (pak_engine.cpp)
+          # ========== pak_engine.cpp (Native fallback with bgmi.csv) ==========
           cat << 'EOF' > app/src/main/cpp/pak_engine.cpp
           #include <jni.h>
           #include <string>
           #include <vector>
           #include <fstream>
           #include <filesystem>
-          #include <zlib.h>
+          #include <sstream>
           #include <android/log.h>
+          #include <android/asset_manager.h>
+          #include <android/asset_manager_jni.h>
 
           namespace fs = std::filesystem;
 
-          static void sendTerminalLog(JNIEnv* env, jobject callback, jmethodID logMethod, const std::string& msg) {
+          static void sendLog(JNIEnv* env, jobject callback, jmethodID logMethod, const std::string& msg) {
               if (callback && logMethod) {
                   jstring jmsg = env->NewStringUTF(msg.c_str());
                   env->CallVoidMethod(callback, logMethod, jmsg);
@@ -261,13 +260,41 @@ jobs:
               }
           }
 
+          static void createPlaceholders(const std::string& outputDir, const std::string& content,
+                                         JNIEnv* env, jobject callback, jmethodID logMethod) {
+              std::istringstream stream(content);
+              std::string line;
+              bool headerSkipped = false;
+              while (std::getline(stream, line)) {
+                  if (!headerSkipped) { headerSkipped = true; continue; }
+                  if (line.empty()) continue;
+                  size_t comma = line.find(',');
+                  std::string path = (comma != std::string::npos) ? line.substr(0, comma) : line;
+                  path.erase(0, path.find_first_not_of(" \t\n\r\f\v\""));
+                  path.erase(path.find_last_not_of(" \t\n\r\f\v\"") + 1);
+                  if (path.empty()) continue;
+                  for (char& c : path) if (c == '\\') c = '/';
+                  if (path.front() == '/') path.erase(0, 1);
+                  if (path.find("./") == 0) path.erase(0, 2);
+
+                  fs::path full = fs::path(outputDir) / path;
+                  fs::create_directories(full.parent_path());
+                  if (!fs::exists(full)) {
+                      std::ofstream ofs(full);
+                      ofs.close();
+                      sendLog(env, callback, logMethod, "📁 [PLACEHOLDER] " + path);
+                  }
+              }
+          }
+
           extern "C" JNIEXPORT jboolean JNICALL
           Java_com_upstool_paktool_PakEngine_nativeUnpackDeep(
               JNIEnv* env,
-              jobject,
+              jobject thiz,
               jstring jPakPath,
               jstring jOutputDir,
-              jobject jCallback
+              jobject jCallback,
+              jobject jAssetManager
           ) {
               jclass cbClass = env->GetObjectClass(jCallback);
               jmethodID logMethod = env->GetMethodID(cbClass, "onLog", "(Ljava/lang/String;)V");
@@ -275,271 +302,274 @@ jobs:
               const char* cPakPath = env->GetStringUTFChars(jPakPath, nullptr);
               const char* cOutputDir = env->GetStringUTFChars(jOutputDir, nullptr);
 
+              sendLog(env, jCallback, logMethod, "[CORE] Native fallback started.");
+
+              AAssetManager* mgr = AAssetManager_fromJava(env, jAssetManager);
+              if (mgr) {
+                  AAsset* asset = AAssetManager_open(mgr, "bgmi.csv", AASSET_MODE_BUFFER);
+                  if (asset) {
+                      off_t len = AAsset_getLength(asset);
+                      if (len > 0) {
+                          const char* data = (const char*)AAsset_getBuffer(asset);
+                          std::string manifestContent(data, len);
+                          createPlaceholders(cOutputDir, manifestContent, env, jCallback, logMethod);
+                      }
+                      AAsset_close(asset);
+                  } else {
+                      sendLog(env, jCallback, logMethod, "[WARN] bgmi.csv not found in assets.");
+                  }
+              }
+
+              // Also ensure core structure
               fs::path coreDir = fs::path(cOutputDir) / "ShadowTrackerExtra" / "Content" / "BluePrints" / "Core";
               fs::create_directories(coreDir);
-
-              sendTerminalLog(env, jCallback, logMethod, "[CORE BUILDER] Building Core structure...");
-              
               fs::path uassetPath = coreDir / "BP_PlayerPawn.uasset";
-              fs::path uexpPath = coreDir / "BP_PlayerPawn.uexp";
-
               if (!fs::exists(uassetPath)) {
                   std::ofstream f(uassetPath, std::ios::binary);
                   uint32_t magic = 0x9E2A83C1;
                   f.write(reinterpret_cast<char*>(&magic), 4);
-                  std::string tag = "BP_PlayerPawn_Asset_Data";
-                  f.write(tag.c_str(), tag.length());
+                  f.write("BP_PlayerPawn_Asset_Data", 22);
                   f.close();
-                  sendTerminalLog(env, jCallback, logMethod, "📁 [CREATED] ShadowTrackerExtra/Content/BluePrints/Core/BP_PlayerPawn.uasset");
+                  sendLog(env, jCallback, logMethod, "📁 [CREATED] BP_PlayerPawn.uasset");
               }
-
+              fs::path uexpPath = coreDir / "BP_PlayerPawn.uexp";
               if (!fs::exists(uexpPath)) {
                   std::ofstream f(uexpPath, std::ios::binary);
-                  std::string tag = "BP_PlayerPawn_Export_Bytecode";
-                  f.write(tag.c_str(), tag.length());
+                  f.write("BP_PlayerPawn_Export_Bytecode", 27);
                   f.close();
-                  sendTerminalLog(env, jCallback, logMethod, "📁 [CREATED] ShadowTrackerExtra/Content/BluePrints/Core/BP_PlayerPawn.uexp");
+                  sendLog(env, jCallback, logMethod, "📁 [CREATED] BP_PlayerPawn.uexp");
               }
 
-              sendTerminalLog(env, jCallback, logMethod, "[SUCCESS] Core files verified at /ShadowTrackerExtra/Content/BluePrints/Core/");
-
+              sendLog(env, jCallback, logMethod, "[SUCCESS] Native fallback complete.");
               env->ReleaseStringUTFChars(jPakPath, cPakPath);
               env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
               return JNI_TRUE;
           }
           EOF
 
-          # 9. Python Core Module (AES-256 + Zlib + Exact Core Target Extractor)
+          # ========== pak_engine.py (Python unpacker with bgmi.csv) ==========
           cat << 'EOF' > app/src/main/python/pak_engine.py
-          import os
-          import sys
-          import zlib
-          import struct
-          import shutil
+          import os, sys, zlib, struct, shutil, csv
           from pathlib import Path
-
           try:
               from Crypto.Cipher import AES
-          except Exception:
+          except:
               AES = None
-
-          try:
-              import zstandard as zstd
-          except Exception:
-              zstd = None
 
           def log(callback, text):
               if callback:
                   callback.onLog(str(text))
 
           PUBG_KEYS = [
-              bytes.fromhex("C8474261EE89F971E27BE9A8A5559C3893C68DF745070CF0B342C4C4AEF95925"), # BGMI / PUBGM
-              bytes.fromhex("3A8F4A618E7B6C5A9F0D1E2C3B4A5968778899AABBCCDDEEFF00112233445566"), # Lite
-              bytes.fromhex("4A666C61736867616D6573747564696F7365637265746B657931323334353637")  # GFP
+              bytes.fromhex("C8474261EE89F971E27BE9A8A5559C3893C68DF745070CF0B342C4C4AEF95925"),
+              bytes.fromhex("3A8F4A618E7B6C5A9F0D1E2C3B4A5968778899AABBCCDDEEFF00112233445566"),
+              bytes.fromhex("4A666C61736867616D6573747564696F7365637265746B657931323334353637")
           ]
 
-          def unpack_pak(pak_path, output_dir, callback):
-              log(callback, f"[ENGINE] Analyzing game patch: {os.path.basename(pak_path)}")
-              os.makedirs(output_dir, exist_ok=True)
-              
-              core_target_dir = os.path.join(output_dir, "ShadowTrackerExtra", "Content", "BluePrints", "Core")
-              os.makedirs(core_target_dir, exist_ok=True)
-              
-              uasset_target = os.path.join(core_target_dir, "BP_PlayerPawn.uasset")
-              uexp_target = os.path.join(core_target_dir, "BP_PlayerPawn.uexp")
+          def load_manifest(csv_path):
+              paths = set()
+              with open(csv_path, 'r', encoding='utf-8') as f:
+                  reader = csv.reader(f)
+                  next(reader, None)  # skip header
+                  for row in reader:
+                      if not row: continue
+                      raw = row[0].strip()
+                      if raw:
+                          norm = raw.replace('\\', '/').lstrip('./').lstrip('/')
+                          paths.add(norm)
+              return paths
 
-              extracted_count = 0
+          def unpack_pak(pak_path, output_dir, callback, manifest_path=None):
+              log(callback, f"[ENGINE] Analyzing: {os.path.basename(pak_path)}")
+              os.makedirs(output_dir, exist_ok=True)
+
+              wanted = None
+              if manifest_path and os.path.exists(manifest_path):
+                  wanted = load_manifest(manifest_path)
+                  log(callback, f"[MANIFEST] Loaded {len(wanted)} files from bgmi.csv")
+              else:
+                  log(callback, "[MANIFEST] No manifest – extracting all")
+
+              core_target = os.path.join(output_dir, "ShadowTrackerExtra", "Content", "BluePrints", "Core")
+              os.makedirs(core_target, exist_ok=True)
+
+              extracted = 0
               file_size = os.path.getsize(pak_path)
 
-              # 1. Check for UE4 PAK Index with AES Decryption
               try:
                   with open(pak_path, "rb") as f:
-                      scan_size = min(file_size, 131072)
-                      f.seek(file_size - scan_size)
-                      tail = f.read(scan_size)
-
+                      scan = min(file_size, 131072)
+                      f.seek(file_size - scan)
+                      tail = f.read(scan)
                       magic = b"\xe1\x12\x6f\x5a"
-                      magic_idx = tail.rfind(magic)
-
-                      if magic_idx != -1:
-                          magic_pos = (file_size - scan_size) + magic_idx
-                          f.seek(magic_pos + 4)
-                          ver_bytes = f.read(20)
-                          if len(ver_bytes) >= 20:
-                              version, index_offset, index_size = struct.unpack("<iqq", ver_bytes[:20])
-
-                              if 0 < index_offset < file_size and 0 < index_size < file_size:
-                                  log(callback, f"[UE4] Found Index Offset: {index_offset} (Size: {index_size})")
-                                  f.seek(index_offset)
-                                  index_bytes = f.read(index_size)
-
-                                  dec_index = None
-                                  working_cipher = None
-
-                                  # Try all PUBG AES Keys
+                      idx = tail.rfind(magic)
+                      if idx != -1:
+                          pos = (file_size - scan) + idx
+                          f.seek(pos + 4)
+                          ver = f.read(20)
+                          if len(ver) >= 20:
+                              version, off, sz = struct.unpack("<iqq", ver[:20])
+                              if 0 < off < file_size and 0 < sz < file_size:
+                                  log(callback, f"[UE4] Index at {off} size {sz}")
+                                  f.seek(off)
+                                  idx_bytes = f.read(sz)
+                                  dec = None
+                                  cipher = None
                                   if AES:
                                       for k in PUBG_KEYS:
                                           try:
                                               c = AES.new(k, AES.MODE_ECB)
-                                              pad = len(index_bytes) % 16
-                                              raw_p = index_bytes if pad == 0 else index_bytes + b"\x00" * (16 - pad)
-                                              test = c.decrypt(raw_p)[:len(index_bytes)]
+                                              pad = len(idx_bytes) % 16
+                                              raw = idx_bytes if pad == 0 else idx_bytes + b"\x00"*(16-pad)
+                                              test = c.decrypt(raw)[:len(idx_bytes)]
                                               m_len = struct.unpack("<i", test[:4])[0]
                                               if 0 < m_len < 128 and (b"../" in test[4:4+m_len] or b"Shadow" in test[4:4+m_len]):
-                                                  dec_index = test
-                                                  working_cipher = c
-                                                  log(callback, "[UE4] AES-256 Key matched! Index decrypted successfully.")
+                                                  dec = test
+                                                  cipher = c
+                                                  log(callback, "[UE4] AES key matched!")
                                                   break
-                                          except Exception:
+                                          except:
                                               pass
-
-                                  if dec_index:
-                                      pos = 0
-                                      m_len = struct.unpack("<i", dec_index[pos:pos+4])[0]
-                                      pos += 4 + m_len
-                                      num_entries = struct.unpack("<i", dec_index[pos:pos+4])[0]
-                                      pos += 4
-                                      log(callback, f"[UE4] Total files in index: {num_entries}")
-
-                                      for i in range(num_entries):
-                                          if pos + 4 > len(dec_index): break
-                                          fn_len = struct.unpack("<i", dec_index[pos:pos+4])[0]
-                                          pos += 4
+                                  if dec:
+                                      p = 0
+                                      m_len = struct.unpack("<i", dec[p:p+4])[0]
+                                      p += 4 + m_len
+                                      num = struct.unpack("<i", dec[p:p+4])[0]
+                                      p += 4
+                                      log(callback, f"[UE4] {num} files in index")
+                                      for i in range(num):
+                                          if p+4 > len(dec): break
+                                          fn_len = struct.unpack("<i", dec[p:p+4])[0]
+                                          p += 4
                                           if fn_len < 0:
-                                              fn = dec_index[pos:pos+(-fn_len)*2].decode("utf-16le", errors="ignore").strip("\x00")
-                                              pos += (-fn_len)*2
+                                              fn = dec[p:p+(-fn_len)*2].decode("utf-16le", errors="ignore").strip("\x00")
+                                              p += (-fn_len)*2
                                           else:
-                                              fn = dec_index[pos:pos+fn_len].decode("utf-8", errors="ignore").strip("\x00")
-                                              pos += fn_len
-
-                                          entry_data = dec_index[pos:pos+28]
-                                          pos += 28 + 20 # Hash
-                                          e_off, e_sz, e_unc, e_cm = struct.unpack("<qqqi", entry_data[:28])
-
-                                          c_blocks = []
+                                              fn = dec[p:p+fn_len].decode("utf-8", errors="ignore").strip("\x00")
+                                              p += fn_len
+                                          entry = dec[p:p+28]
+                                          p += 28 + 20
+                                          e_off, e_sz, e_unc, e_cm = struct.unpack("<qqqi", entry[:28])
+                                          blocks = []
                                           if e_cm != 0:
-                                              b_cnt = struct.unpack("<i", dec_index[pos:pos+4])[0]
-                                              pos += 4
-                                              for _ in range(b_cnt):
-                                                  bs, be = struct.unpack("<qq", dec_index[pos:pos+16])
-                                                  c_blocks.append((bs, be))
-                                                  pos += 16
+                                              cnt = struct.unpack("<i", dec[p:p+4])[0]
+                                              p += 4
+                                              for _ in range(cnt):
+                                                  bs, be = struct.unpack("<qq", dec[p:p+16])
+                                                  blocks.append((bs, be))
+                                                  p += 16
+                                          is_enc = dec[p] == 1
+                                          p += 5
 
-                                          is_enc = dec_index[pos] == 1
-                                          pos += 5
+                                          clean = fn.replace("\\", "/").lstrip("/").replace("../", "").lstrip('./').lstrip('/')
+                                          if wanted is not None and clean not in wanted:
+                                              continue
 
-                                          clean_path = fn.replace("\\", "/").lstrip("/").replace("../", "")
-                                          dest = os.path.join(output_dir, clean_path)
+                                          dest = os.path.join(output_dir, clean)
                                           os.makedirs(os.path.dirname(dest), exist_ok=True)
-
-                                          # Target extraction
-                                          h_sz = 8 + 8 + 8 + 4 + 20 + 1 + 4
-                                          if e_cm != 0: h_sz += 4 + len(c_blocks) * 16
+                                          h_sz = 8+8+8+4+20+1+4 + (4+len(blocks)*16 if e_cm != 0 else 0)
 
                                           if e_cm == 0:
                                               f.seek(e_off + h_sz)
                                               data = f.read(e_unc)
-                                              if is_enc and working_cipher:
-                                                  data = working_cipher.decrypt(data)[:e_unc]
+                                              if is_enc and cipher:
+                                                  data = cipher.decrypt(data)[:e_unc]
                                               with open(dest, "wb") as o: o.write(data)
                                           else:
                                               payload = bytearray()
-                                              for bs, be in c_blocks:
+                                              for bs, be in blocks:
                                                   f.seek(e_off + h_sz + bs)
-                                                  chk = f.read(be - bs)
-                                                  if is_enc and working_cipher:
-                                                      chk = working_cipher.decrypt(chk)[:len(chk)]
+                                                  chunk = f.read(be - bs)
+                                                  if is_enc and cipher:
+                                                      chunk = cipher.decrypt(chunk)[:len(chunk)]
                                                   try:
-                                                      payload += zlib.decompress(chk)
-                                                  except Exception:
-                                                      try: payload += zlib.decompress(chk, -15)
-                                                      except Exception: pass
+                                                      payload += zlib.decompress(chunk)
+                                                  except:
+                                                      try: payload += zlib.decompress(chunk, -15)
+                                                      except: pass
                                               with open(dest, "wb") as o: o.write(payload)
-
-                                          extracted_count += 1
-                                          if "BP_PlayerPawn" in clean_path or i % 10 == 0:
-                                              log(callback, f"📁 [{i+1}/{num_entries}] {clean_path}")
+                                          extracted += 1
+                                          if "BP_PlayerPawn" in clean or i % 10 == 0:
+                                              log(callback, f"📁 [{i+1}/{num}] {clean}")
               except Exception as e:
-                  log(callback, f"[INFO] AES Parser notice: {e}")
+                  log(callback, f"[INFO] Index parse note: {e}")
 
-              # 2. Verify / Ensure BP_PlayerPawn files are inside ShadowTrackerExtra/Content/BluePrints/Core/
-              found_uasset = list(Path(output_dir).rglob("*BP_PlayerPawn*.uasset"))
-              if found_uasset and not os.path.exists(uasset_target):
-                  shutil.copyfile(str(found_uasset[0]), uasset_target)
+              # Ensure core files
+              for ext in [".uasset", ".uexp"]:
+                  found = list(Path(output_dir).rglob(f"*BP_PlayerPawn*{ext}"))
+                  target = os.path.join(core_target, f"BP_PlayerPawn{ext}")
+                  if found and not os.path.exists(target):
+                      shutil.copyfile(str(found[0]), target)
+                  if not os.path.exists(target):
+                      with open(target, "wb") as f:
+                          f.write(b"PLACEHOLDER" * 10)
+                      log(callback, f"📁 [PLACEHOLDER] BP_PlayerPawn{ext}")
 
-              found_uexp = list(Path(output_dir).rglob("*BP_PlayerPawn*.uexp"))
-              if found_uexp and not os.path.exists(uexp_target):
-                  shutil.copyfile(str(found_uexp[0]), uexp_target)
-
-              # If still missing from direct carve, create genuine UE4 assets in target
-              if not os.path.exists(uasset_target):
-                  with open(uasset_target, "wb") as f_uasset:
-                      f_uasset.write(b"\xc1\x83\x2a\x9e\x00\x00\x00\x00\x00\x00\x00\x00BP_PlayerPawn_Core_UAsset\x00")
-                  log(callback, "📁 [EXTRACTED] ShadowTrackerExtra/Content/BluePrints/Core/BP_PlayerPawn.uasset")
-
-              if not os.path.exists(uexp_target):
-                  with open(uexp_target, "wb") as f_uexp:
-                      f_uexp.write(b"BP_PlayerPawn_Core_UExp_Export_Payload\x00" * 32)
-                  log(callback, "📁 [EXTRACTED] ShadowTrackerExtra/Content/BluePrints/Core/BP_PlayerPawn.uexp")
-
-              log(callback, f"[SUCCESS] Target files ready at: ShadowTrackerExtra/Content/BluePrints/Core/")
+              log(callback, f"[SUCCESS] Extracted {extracted} files (manifest filtered).")
               return True
 
           def repack_pak(source_dir, output_pak, callback):
-              log(callback, f"[REPACK] Scanning files from: {source_dir}")
-              file_list = []
-              for root, _, files in os.walk(source_dir):
-                  for file in files:
-                      full_path = os.path.join(root, file)
-                      rel_path = os.path.relpath(full_path, source_dir).replace("\\", "/")
-                      file_list.append((full_path, rel_path))
-
+              log(callback, f"[REPACK] Scanning {source_dir}")
+              files = []
+              for root, _, filenames in os.walk(source_dir):
+                  for name in filenames:
+                      full = os.path.join(root, name)
+                      rel = os.path.relpath(full, source_dir).replace("\\", "/")
+                      files.append((full, rel))
               with open(output_pak, "wb") as pak:
                   entries = []
-                  for full_path, rel_path in file_list:
-                      file_data = open(full_path, "rb").read()
-                      offset = pak.tell()
-                      size = len(file_data)
-
-                      pak.write(struct.pack("<QQQ", offset, size, size))
-                      pak.write(struct.pack("<I", 0)) # Raw payload
-                      pak.write(b"\x00" * 20)
+                  for full, rel in files:
+                      data = open(full, "rb").read()
+                      off = pak.tell()
+                      size = len(data)
+                      pak.write(struct.pack("<QQQ", off, size, size))
+                      pak.write(struct.pack("<I", 0))
+                      pak.write(b"\x00"*20)
                       pak.write(struct.pack("<B", 0))
                       pak.write(struct.pack("<I", 0))
-
-                      pak.write(file_data)
-                      entries.append((rel_path, offset, size))
-                      log(callback, f"📦 [PACK] {rel_path}")
-
-                  index_offset = pak.tell()
+                      pak.write(data)
+                      entries.append((rel, off, size))
+                      log(callback, f"📦 {rel}")
+                  idx_off = pak.tell()
                   mount = "../../../\x00"
                   pak.write(struct.pack("<I", len(mount)))
                   pak.write(mount.encode("utf-8"))
                   pak.write(struct.pack("<I", len(entries)))
-
-                  for rel_path, off, sz in entries:
-                      p_bytes = rel_path.encode("utf-8") + b"\x00"
-                      pak.write(struct.pack("<I", len(p_bytes)))
-                      pak.write(p_bytes)
+                  for rel, off, sz in entries:
+                      pbytes = rel.encode("utf-8") + b"\x00"
+                      pak.write(struct.pack("<I", len(pbytes)))
+                      pak.write(pbytes)
                       pak.write(struct.pack("<QQQI", off, sz, sz, 0))
-                      pak.write(b"\x00" * 20)
+                      pak.write(b"\x00"*20)
                       pak.write(struct.pack("<BI", 0, 0))
-
-                  index_size = pak.tell() - index_offset
-
-                  pak.write(b"\x00" * 16)
+                  idx_size = pak.tell() - idx_off
+                  pak.write(b"\x00"*16)
                   pak.write(struct.pack("<B", 0))
                   pak.write(struct.pack("<I", 0x5A6F12E1))
                   pak.write(struct.pack("<I", 8))
-                  pak.write(struct.pack("<Q", index_offset))
-                  pak.write(struct.pack("<Q", index_size))
-                  pak.write(b"\x00" * 20)
-
-              log(callback, f"[FINISHED] Repacked {len(file_list)} files -> {os.path.basename(output_pak)}")
+                  pak.write(struct.pack("<Q", idx_off))
+                  pak.write(struct.pack("<Q", idx_size))
+                  pak.write(b"\x00"*20)
+              log(callback, f"[FINISHED] Repacked {len(files)} files -> {os.path.basename(output_pak)}")
               return True
           EOF
 
-          # 10. PakEngine.kt
+          # ========== bgmi.csv (your manifest) ==========
+          cat << 'EOF' > app/src/main/assets/bgmi.csv
+          FilePath
+          Content/Arts/6X5.uasset
+          Content/Arts/6X5.uexp
+          Content/Arts/Characters/Aircraft/Aircraft_N.uasset
+          Content/Arts/Characters/Aircraft/Aircraft_N.ubulk
+          Content/Arts/Characters/Aircraft/Aircraft_RMA.uasset
+          Content/Arts/Characters/Aircraft/Aircraft_RMA.ubulk
+          Content/Arts/Characters/Aircraft/Aircraft_RMA.uexp
+          Content/Arts/Characters/Aircraft/Airskin/Aircraft_1_D_int.uasset
+          ShadowTrackerExtra/Content/BluePrints/Core/BP_PlayerPawn.uasset
+          ShadowTrackerExtra/Content/BluePrints/Core/BP_PlayerPawn.uexp
+          EOF
+
+          # ========== PakEngine.kt ==========
           cat << 'EOF' > app/src/main/java/com/upstool/paktool/PakEngine.kt
           package com.upstool.paktool
 
@@ -560,7 +590,7 @@ jobs:
                   System.loadLibrary("upstool_native")
               }
 
-              private external fun nativeUnpackDeep(pakPath: String, outputDir: String, callback: TerminalCallback): Boolean
+              private external fun nativeUnpackDeep(pakPath: String, outputDir: String, callback: TerminalCallback, assetManager: Any): Boolean
 
               private val baseDir = File(Environment.getExternalStorageDirectory(), "Upstool")
               val dirOriginal = File(baseDir, "Original").apply { mkdirs() }
@@ -568,25 +598,45 @@ jobs:
               val dirUnpack   = File(baseDir, "Unpack").apply { mkdirs() }
               val dirRepack   = File(baseDir, "Repack").apply { mkdirs() }
 
-              fun initPython(context: Context) {
+              private lateinit var context: Context
+
+              fun initPython(ctx: Context) {
+                  context = ctx.applicationContext
                   if (!Python.isStarted()) {
-                      Python.start(AndroidPlatform(context.applicationContext))
+                      Python.start(AndroidPlatform(context))
                   }
               }
 
               suspend fun unpackArchive(file: File, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
                   val targetFolder = File(dirUnpack, file.nameWithoutExtension).apply { mkdirs() }
 
+                  val manifestFile = File(context.cacheDir, "bgmi.csv")
+                  try {
+                      context.assets.open("bgmi.csv").use { input ->
+                          manifestFile.outputStream().use { output ->
+                              input.copyTo(output)
+                          }
+                      }
+                      callback.onLog("[MANIFEST] bgmi.csv copied to cache.")
+                  } catch (e: Exception) {
+                      callback.onLog("[MANIFEST] Could not copy bgmi.csv: ${e.message}")
+                  }
+
                   try {
                       val py = Python.getInstance()
                       val module = py.getModule("pak_engine")
-                      val pyResult = module.callAttr("unpack_pak", file.absolutePath, targetFolder.absolutePath, callback).toBoolean()
+                      val pyResult = module.callAttr("unpack_pak",
+                          file.absolutePath,
+                          targetFolder.absolutePath,
+                          callback,
+                          manifestFile.absolutePath
+                      ).toBoolean()
                       if (pyResult) return@withContext true
                   } catch (e: Exception) {
-                      callback.onLog("[PY] Switching to Native core builder: ${e.message}")
+                      callback.onLog("[PY] Switching to native fallback: ${e.message}")
                   }
 
-                  nativeUnpackDeep(file.absolutePath, targetFolder.absolutePath, callback)
+                  nativeUnpackDeep(file.absolutePath, targetFolder.absolutePath, callback, context.assets)
               }
 
               suspend fun replaceAndRepack(folderName: String, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
@@ -596,18 +646,18 @@ jobs:
                       return@withContext false
                   }
 
-                  callback.onLog("[REPLACE] Checking Editor folder for files...")
-                  var replacedCount = 0
+                  callback.onLog("[REPLACE] Checking Editor folder...")
+                  var replaced = 0
                   dirEditor.listFiles()?.forEach { editorFile ->
                       unpackedFolder.walkTopDown().forEach { fileInTree ->
                           if (fileInTree.name.equals(editorFile.name, ignoreCase = true)) {
                               editorFile.copyTo(fileInTree, overwrite = true)
-                              replacedCount++
+                              replaced++
                               callback.onLog("🔄 [REPLACED] ${editorFile.name} -> ${fileInTree.relativeTo(unpackedFolder).path}")
                           }
                       }
                   }
-                  callback.onLog("[INFO] Total modified files replaced: $replacedCount")
+                  callback.onLog("[INFO] $replaced files replaced.")
 
                   val outputPak = File(dirRepack, "$folderName.pak")
                   try {
@@ -622,7 +672,7 @@ jobs:
           }
           EOF
 
-          # 11. MainActivity.kt (UI Screen)
+          # ========== MainActivity.kt (same UI) ==========
           cat << 'EOF' > app/src/main/java/com/upstool/paktool/MainActivity.kt
           package com.upstool.paktool
 
@@ -663,7 +713,6 @@ jobs:
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
                   PakEngine.initPython(applicationContext)
-
                   setContent {
                       MaterialTheme(colorScheme = darkColorScheme()) {
                           Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0A0A0A)) {
@@ -703,15 +752,11 @@ jobs:
                   if (selectedFile == null && originals.isNotEmpty()) {
                       selectedFile = originals.first()
                   }
-
                   val unp = PakEngine.dirUnpack.listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
                   unpackedFolders = unp
               }
 
-              LaunchedEffect(Unit) {
-                  refreshFiles()
-              }
-
+              LaunchedEffect(Unit) { refreshFiles() }
               LaunchedEffect(terminalLogs.size) {
                   if (terminalLogs.isNotEmpty()) {
                       listState.animateScrollToItem(terminalLogs.size - 1)
@@ -937,7 +982,7 @@ jobs:
           }
           EOF
 
-      - name: Commit and Push All Sources to Repository
+      - name: Commit and Push All Sources
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -945,16 +990,16 @@ jobs:
           if git diff --staged --quiet; then
             echo "No new changes to commit."
           else
-            git commit -m "Fix Core tree unpack, AES-256 keys, and zero extraction bug [skip ci]"
+            git commit -m "Add bgmi.csv manifest and complete build setup [skip ci]"
             git push origin HEAD:${{ github.ref_name }}
           fi
 
-      - name: Install Android NDK and CMake
+      - name: Install NDK and CMake
         run: |
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
 
-      - name: Build Debug APK with Gradle 8.5
+      - name: Build Debug APK
         run: ./gradlew assembleDebug --stacktrace
 
       - name: Upload APK Artifact
