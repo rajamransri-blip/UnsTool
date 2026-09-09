@@ -235,7 +235,8 @@ jobs:
           set(CMAKE_CXX_STANDARD 17)
           add_library(upstool_native SHARED pak_engine.cpp)
           find_library(log-lib log)
-          target_link_libraries(upstool_native ${log-lib} z)
+          find_library(android-lib android)
+          target_link_libraries(upstool_native ${log-lib} ${android-lib} z)
           EOF
 
           # ========== pak_engine.cpp (Native fallback with bgmi.csv) ==========
@@ -333,7 +334,7 @@ jobs:
                   sendLog(env, jCallback, logMethod, "📁 [CREATED] BP_PlayerPawn.uasset");
               }
               fs::path uexpPath = coreDir / "BP_PlayerPawn.uexp";
-              if (!fs::exists(uexpPath)) {
+              if (!fs::exists(ueexpPath)) {
                   std::ofstream f(uexpPath, std::ios::binary);
                   f.write("BP_PlayerPawn_Export_Bytecode", 27);
                   f.close();
@@ -672,7 +673,7 @@ jobs:
           }
           EOF
 
-          # ========== MainActivity.kt (same UI) ==========
+          # ========== MainActivity.kt ==========
           cat << 'EOF' > app/src/main/java/com/upstool/paktool/MainActivity.kt
           package com.upstool.paktool
 
@@ -1000,7 +1001,9 @@ jobs:
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --stacktrace
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
