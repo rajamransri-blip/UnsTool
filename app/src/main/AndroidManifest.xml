@@ -10,7 +10,7 @@
 
     <application
         android:allowBackup="true"
-        android:label="Upstool"
+        android:label="@string/app_name"
         android:requestLegacyExternalStorage="true"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
