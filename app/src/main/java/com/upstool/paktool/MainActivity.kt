@@ -37,7 +37,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         PakEngine.initPython(applicationContext)
-
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0A0A0A)) {
@@ -77,15 +76,11 @@ fun TerminalUnpackerScreen() {
         if (selectedFile == null && originals.isNotEmpty()) {
             selectedFile = originals.first()
         }
-
         val unp = PakEngine.dirUnpack.listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
         unpackedFolders = unp
     }
 
-    LaunchedEffect(Unit) {
-        refreshFiles()
-    }
-
+    LaunchedEffect(Unit) { refreshFiles() }
     LaunchedEffect(terminalLogs.size) {
         if (terminalLogs.isNotEmpty()) {
             listState.animateScrollToItem(terminalLogs.size - 1)

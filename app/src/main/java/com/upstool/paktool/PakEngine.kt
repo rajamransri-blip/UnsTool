@@ -17,7 +17,7 @@ object PakEngine {
         System.loadLibrary("upstool_native")
     }
 
-    private external fun nativeUnpackDeep(pakPath: String, outputDir: String, callback: TerminalCallback): Boolean
+    private external fun nativeUnpackDeep(pakPath: String, outputDir: String, callback: TerminalCallback, assetManager: Any): Boolean
 
     private val baseDir = File(Environment.getExternalStorageDirectory(), "Upstool")
     val dirOriginal = File(baseDir, "Original").apply { mkdirs() }
@@ -25,25 +25,45 @@ object PakEngine {
     val dirUnpack   = File(baseDir, "Unpack").apply { mkdirs() }
     val dirRepack   = File(baseDir, "Repack").apply { mkdirs() }
 
-    fun initPython(context: Context) {
+    private lateinit var context: Context
+
+    fun initPython(ctx: Context) {
+        context = ctx.applicationContext
         if (!Python.isStarted()) {
-            Python.start(AndroidPlatform(context.applicationContext))
+            Python.start(AndroidPlatform(context))
         }
     }
 
     suspend fun unpackArchive(file: File, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
         val targetFolder = File(dirUnpack, file.nameWithoutExtension).apply { mkdirs() }
 
+        val manifestFile = File(context.cacheDir, "bgmi.csv")
+        try {
+            context.assets.open("bgmi.csv").use { input ->
+                manifestFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            callback.onLog("[MANIFEST] bgmi.csv copied to cache.")
+        } catch (e: Exception) {
+            callback.onLog("[MANIFEST] Could not copy bgmi.csv: ${e.message}")
+        }
+
         try {
             val py = Python.getInstance()
             val module = py.getModule("pak_engine")
-            val pyResult = module.callAttr("unpack_pak", file.absolutePath, targetFolder.absolutePath, callback).toBoolean()
+            val pyResult = module.callAttr("unpack_pak",
+                file.absolutePath,
+                targetFolder.absolutePath,
+                callback,
+                manifestFile.absolutePath
+            ).toBoolean()
             if (pyResult) return@withContext true
         } catch (e: Exception) {
-            callback.onLog("[PY] Switching to Native core builder: ${e.message}")
+            callback.onLog("[PY] Switching to native fallback: ${e.message}")
         }
 
-        nativeUnpackDeep(file.absolutePath, targetFolder.absolutePath, callback)
+        nativeUnpackDeep(file.absolutePath, targetFolder.absolutePath, callback, context.assets)
     }
 
     suspend fun replaceAndRepack(folderName: String, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
@@ -53,18 +73,18 @@ object PakEngine {
             return@withContext false
         }
 
-        callback.onLog("[REPLACE] Checking Editor folder for files...")
-        var replacedCount = 0
+        callback.onLog("[REPLACE] Checking Editor folder...")
+        var replaced = 0
         dirEditor.listFiles()?.forEach { editorFile ->
             unpackedFolder.walkTopDown().forEach { fileInTree ->
                 if (fileInTree.name.equals(editorFile.name, ignoreCase = true)) {
                     editorFile.copyTo(fileInTree, overwrite = true)
-                    replacedCount++
+                    replaced++
                     callback.onLog("🔄 [REPLACED] ${editorFile.name} -> ${fileInTree.relativeTo(unpackedFolder).path}")
                 }
             }
         }
-        callback.onLog("[INFO] Total modified files replaced: $replacedCount")
+        callback.onLog("[INFO] $replaced files replaced.")
 
         val outputPak = File(dirRepack, "$folderName.pak")
         try {
