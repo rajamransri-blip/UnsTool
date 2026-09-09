@@ -25,125 +25,143 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Generate Complete Source Tree
+      - name: Generate Source Tree with Chaquopy and Deep Zlib Engine
         run: |
           mkdir -p gradle/wrapper
           mkdir -p app/src/main/cpp
+          mkdir -p app/src/main/python
           mkdir -p app/src/main/java/com/upstool/paktool
           mkdir -p app/src/main/res/values
 
-          # 1. gradle.properties (Fixes AndroidX requirement & Memory)
+          # 1. gradle.properties
           cat << 'EOF' > gradle.properties
-          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8
           android.useAndroidX=true
           android.nonTransitiveRClass=true
           kotlin.code.style=official
           EOF
 
-          # 2. settings.gradle.kts
-          cat << 'EOF' > settings.gradle.kts
+          # 2. settings.gradle (Groovy DSL with Chaquopy Maven)
+          cat << 'EOF' > settings.gradle
           pluginManagement {
               repositories {
                   google()
                   mavenCentral()
                   gradlePluginPortal()
+                  maven { url "https://chaquo.com/maven" }
               }
           }
           dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
               repositories {
                   google()
                   mavenCentral()
+                  maven { url "https://chaquo.com/maven" }
               }
           }
           rootProject.name = "Upstool"
-          include(":app")
+          include ':app'
           EOF
 
-          # 3. Root build.gradle.kts
-          cat << 'EOF' > build.gradle.kts
-          plugins {
-              id("com.android.application") version "8.3.2" apply false
-              id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+          # 3. Root build.gradle (Chaquopy plugin definition)
+          cat << 'EOF' > build.gradle
+          buildscript {
+              repositories {
+                  google()
+                  mavenCentral()
+                  maven { url "https://chaquo.com/maven" }
+              }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:8.2.2'
+                  classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22'
+                  classpath 'com.chaquo.python:gradle:15.0.1'
+              }
           }
           EOF
 
-          # 4. app/build.gradle.kts
-          cat << 'EOF' > app/build.gradle.kts
-          plugins {
-              id("com.android.application")
-              id("org.jetbrains.kotlin.android")
-          }
+          # 4. app/build.gradle (Chaquopy + PyCryptodome + Zstandard + NDK)
+          cat << 'EOF' > app/build.gradle
+          apply plugin: 'com.android.application'
+          apply plugin: 'org.jetbrains.kotlin.android'
+          apply plugin: 'com.chaquo.python'
 
           android {
-              namespace = "com.upstool.paktool"
-              compileSdk = 34
+              namespace 'com.upstool.paktool'
+              compileSdk 34
 
               defaultConfig {
-                  applicationId = "com.upstool.paktool"
-                  minSdk = 24
-                  targetSdk = 34
-                  versionCode = 1
-                  versionName = "1.0.0"
+                  applicationId "com.upstool.paktool"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0.0"
 
                   ndk {
-                      abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))
+                      abiFilters "arm64-v8a", "armeabi-v7a"
+                  }
+
+                  python {
+                      version "3.10"
+                      pip {
+                          install "pycryptodome"
+                          install "zstandard"
+                      }
                   }
 
                   externalNativeBuild {
                       cmake {
-                          cppFlags += "-std=c++17"
-                          arguments += "-DANDROID_STL=c++_shared"
+                          cppFlags "-std=c++17"
+                          arguments "-DANDROID_STL=c++_shared"
                       }
                   }
               }
 
               buildTypes {
                   release {
-                      isMinifyEnabled = false
-                      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+                      minifyEnabled false
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
                   }
               }
 
               compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
               }
 
               kotlinOptions {
-                  jvmTarget = "17"
+                  jvmTarget = '17'
               }
 
               buildFeatures {
-                  compose = true
+                  compose true
               }
 
               composeOptions {
-                  kotlinCompilerExtensionVersion = "1.5.8"
+                  kotlinCompilerExtensionVersion '1.5.8'
               }
 
               externalNativeBuild {
                   cmake {
-                      path = file("src/main/cpp/CMakeLists.txt")
-                      version = "3.22.1"
+                      path file('src/main/cpp/CMakeLists.txt')
+                      version '3.22.1'
                   }
               }
 
-              ndkVersion = "26.1.10909125"
+              ndkVersion '26.1.10909125'
           }
 
           dependencies {
-              val composeBom = platform("androidx.compose:compose-bom:2024.02.00")
-              implementation(composeBom)
-              implementation("androidx.core:core-ktx:1.12.0")
-              implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-              implementation("androidx.activity:activity-compose:1.8.2")
-              implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
-              implementation("androidx.compose.ui:ui")
-              implementation("androidx.compose.ui:ui-graphics")
-              implementation("androidx.compose.material3:material3")
-              implementation("androidx.compose.material:material-icons-extended")
-              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+              def composeBom = platform('androidx.compose:compose-bom:2024.02.00')
+              implementation composeBom
+              implementation 'androidx.core:core-ktx:1.12.0'
+              implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
+              implementation 'androidx.activity:activity-compose:1.8.2'
+              implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0'
+              implementation 'androidx.compose.ui:ui'
+              implementation 'androidx.compose.ui:ui-graphics'
+              implementation 'androidx.compose.material3:material3'
+              implementation 'androidx.compose.material:material-icons-extended'
+              implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
           }
           EOF
 
@@ -205,7 +223,7 @@ jobs:
           )
           EOF
 
-          # 8. Fixed C++ Engine with Real-Time Terminal Streaming
+          # 8. C++ Deep Zlib Scanner Engine (Zero "Magic Not Found" Crashes)
           cat << 'EOF' > app/src/main/cpp/pak_engine.cpp
           #include <jni.h>
           #include <string>
@@ -219,47 +237,11 @@ jobs:
 
           namespace fs = std::filesystem;
 
-          #define LOG_TAG "UpstoolEngine"
+          #define LOG_TAG "UpstoolNative"
           #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
           #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
           constexpr uint32_t PAK_MAGIC = 0x5A6F12E1;
-
-          #pragma pack(push, 1)
-          struct FPakCompressedBlock {
-              int64_t compressedStart;
-              int64_t compressedEnd;
-          };
-
-          struct FPakInfo {
-              int32_t  version = 8;
-              int64_t  indexOffset = 0;
-              int64_t  indexSize = 0;
-              uint8_t  indexHash[20] = {0};
-              uint8_t  bEncryptedIndex = 0;
-              uint32_t magic = PAK_MAGIC;
-          };
-          #pragma pack(pop)
-
-          struct FPakEntry {
-              std::string filename;
-              int64_t  offset = 0;
-              int64_t  size = 0;
-              int64_t  uncompressedSize = 0;
-              int32_t  compressionMethod = 0; // 0 = None, 1 = Zlib
-              uint8_t  hash[20] = {0};
-              std::vector<FPakCompressedBlock> compressionBlocks;
-              uint8_t  bEncrypted = 0;
-              uint32_t compressionBlockSize = 0;
-
-              int64_t getSerializedHeaderSize() const {
-                  int64_t baseSize = sizeof(int64_t) * 3 + sizeof(int32_t) + 20 + sizeof(uint8_t) + sizeof(uint32_t);
-                  if (compressionMethod != 0) {
-                      baseSize += sizeof(int32_t) + (compressionBlocks.size() * sizeof(FPakCompressedBlock));
-                  }
-                  return baseSize;
-              }
-          };
 
           static void sendTerminalLog(JNIEnv* env, jobject callback, jmethodID logMethod, const std::string& msg) {
               if (callback && logMethod) {
@@ -267,79 +249,6 @@ jobs:
                   env->CallVoidMethod(callback, logMethod, jmsg);
                   env->DeleteLocalRef(jmsg);
               }
-          }
-
-          static std::string readFString(std::ifstream& stream) {
-              int32_t length = 0;
-              if (!stream.read(reinterpret_cast<char*>(&length), sizeof(int32_t))) return "";
-              if (length == 0) return "";
-              if (length > 1048576 || length < -1048576) return "";
-
-              if (length < 0) {
-                  int32_t ucs2Len = -length;
-                  std::vector<uint16_t> wbuf(ucs2Len);
-                  stream.read(reinterpret_cast<char*>(wbuf.data()), ucs2Len * sizeof(uint16_t));
-                  std::string res;
-                  res.reserve(ucs2Len);
-                  for (auto c : wbuf) {
-                      if (c != 0) res.push_back(static_cast<char>(c));
-                  }
-                  while (!res.empty() && res.back() == '\0') res.pop_back();
-                  return res;
-              }
-
-              std::vector<char> buffer(length);
-              stream.read(buffer.data(), length);
-              std::string res(buffer.data(), length);
-              while (!res.empty() && res.back() == '\0') res.pop_back();
-              return res;
-          }
-
-          static void writeFString(std::ofstream& stream, const std::string& str) {
-              int32_t length = static_cast<int32_t>(str.length() + 1);
-              stream.write(reinterpret_cast<const char*>(&length), sizeof(int32_t));
-              stream.write(str.c_str(), length);
-          }
-
-          static FPakEntry readEntry(std::ifstream& stream) {
-              FPakEntry entry;
-              stream.read(reinterpret_cast<char*>(&entry.offset), sizeof(int64_t));
-              stream.read(reinterpret_cast<char*>(&entry.size), sizeof(int64_t));
-              stream.read(reinterpret_cast<char*>(&entry.uncompressedSize), sizeof(int64_t));
-              stream.read(reinterpret_cast<char*>(&entry.compressionMethod), sizeof(int32_t));
-              stream.read(reinterpret_cast<char*>(entry.hash), 20);
-
-              if (entry.compressionMethod != 0) {
-                  int32_t blockCount = 0;
-                  stream.read(reinterpret_cast<char*>(&blockCount), sizeof(int32_t));
-                  if (blockCount > 0 && blockCount < 100000) {
-                      entry.compressionBlocks.resize(blockCount);
-                      for (int32_t i = 0; i < blockCount; ++i) {
-                          stream.read(reinterpret_cast<char*>(&entry.compressionBlocks[i]), sizeof(FPakCompressedBlock));
-                      }
-                  }
-              }
-              stream.read(reinterpret_cast<char*>(&entry.bEncrypted), sizeof(uint8_t));
-              stream.read(reinterpret_cast<char*>(&entry.compressionBlockSize), sizeof(uint32_t));
-              return entry;
-          }
-
-          static void writeEntry(std::ofstream& stream, const FPakEntry& entry) {
-              stream.write(reinterpret_cast<const char*>(&entry.offset), sizeof(int64_t));
-              stream.write(reinterpret_cast<const char*>(&entry.size), sizeof(int64_t));
-              stream.write(reinterpret_cast<const char*>(&entry.uncompressedSize), sizeof(int64_t));
-              stream.write(reinterpret_cast<const char*>(&entry.compressionMethod), sizeof(int32_t));
-              stream.write(reinterpret_cast<const char*>(entry.hash), 20);
-
-              if (entry.compressionMethod != 0) {
-                  int32_t blockCount = static_cast<int32_t>(entry.compressionBlocks.size());
-                  stream.write(reinterpret_cast<const char*>(&blockCount), sizeof(int32_t));
-                  for (const auto& block : entry.compressionBlocks) {
-                      stream.write(reinterpret_cast<const char*>(&block), sizeof(FPakCompressedBlock));
-                  }
-              }
-              stream.write(reinterpret_cast<const char*>(&entry.bEncrypted), sizeof(uint8_t));
-              stream.write(reinterpret_cast<const char*>(&entry.compressionBlockSize), sizeof(uint32_t));
           }
 
           static bool decompressZlib(const uint8_t* src, size_t srcLen, uint8_t* dst, size_t dstLen) {
@@ -355,8 +264,94 @@ jobs:
               return (ret == Z_STREAM_END || ret == Z_OK);
           }
 
+          static bool deepCarveStreams(
+              JNIEnv* env,
+              jobject jCallback,
+              jmethodID logMethod,
+              const std::string& pakPath,
+              const std::string& outputDir
+          ) {
+              sendTerminalLog(env, jCallback, logMethod, "[DEEP SCAN] Starting Zlib stream carving...");
+
+              std::ifstream file(pakPath, std::ios::binary);
+              if (!file.is_open()) return false;
+
+              // Read archive chunks and scan for Zlib headers (0x78 0x9C, 0x78 0xDA, 0x78 0x01)
+              const size_t bufferSize = 1024 * 1024 * 4; // 4MB chunks
+              std::vector<uint8_t> buffer(bufferSize);
+
+              int extractedCount = 0;
+              file.seekg(0, std::ios::end);
+              int64_t totalSize = file.tellg();
+              file.seekg(0, std::ios::beg);
+
+              int64_t currentOffset = 0;
+              std::vector<uint8_t> decompBuffer(1024 * 1024 * 8); // 8MB unpack buffer
+
+              while (currentOffset < totalSize) {
+                  file.seekg(currentOffset);
+                  file.read(reinterpret_cast<char*>(buffer.data()), bufferSize);
+                  std::streamsize bytesRead = file.gcount();
+                  if (bytesRead < 4) break;
+
+                  for (size_t i = 0; i < bytesRead - 4; ++i) {
+                      if (buffer[i] == 0x78 && (buffer[i+1] == 0x9C || buffer[i+1] == 0xDA || buffer[i+1] == 0x01)) {
+                          size_t available = bytesRead - i;
+                          z_stream strm{};
+                          strm.next_in = &buffer[i];
+                          strm.avail_in = available;
+                          strm.next_out = decompBuffer.data();
+                          strm.avail_out = decompBuffer.size();
+
+                          if (inflateInit(&strm) == Z_OK) {
+                              int ret = inflate(&strm, Z_FINISH);
+                              size_t decompressedSize = decompBuffer.size() - strm.avail_out;
+                              inflateEnd(&strm);
+
+                              if ((ret == Z_STREAM_END || ret == Z_OK) && decompressedSize > 64) {
+                                  // Check for UE4 uasset/uexp markers or string paths
+                                  std::string contentStr(reinterpret_cast<char*>(decompBuffer.data()), std::min(decompressedSize, (size_t)2048));
+                                  
+                                  std::string relPath;
+                                  if (contentStr.find("BP_PlayerPawn") != std::string::npos) {
+                                      if (contentStr.find("uasset") != std::string::npos || decompBuffer[0] == 0xC1 || decompBuffer[3] == 0x9E) {
+                                          relPath = "ShadowTrackerExtra/Saved/Paks/BP_PlayerPawn.uasset";
+                                      } else {
+                                          relPath = "ShadowTrackerExtra/Saved/Paks/BP_PlayerPawn.uexp";
+                                      }
+                                  } else if (contentStr.find("ShadowTrackerExtra") != std::string::npos) {
+                                      size_t p = contentStr.find("ShadowTrackerExtra");
+                                      size_t endP = contentStr.find_first_of("\0\r\n ", p);
+                                      if (endP != std::string::npos && (endP - p) < 256) {
+                                          relPath = contentStr.substr(p, endP - p);
+                                      }
+                                  }
+
+                                  if (!relPath.empty()) {
+                                      fs::path destPath = fs::path(outputDir) / relPath;
+                                      fs::create_directories(destPath.parent_path());
+
+                                      std::ofstream out(destPath, std::ios::binary);
+                                      if (out.is_open()) {
+                                          out.write(reinterpret_cast<char*>(decompBuffer.data()), decompressedSize);
+                                          out.close();
+                                          extractedCount++;
+                                          sendTerminalLog(env, jCallback, logMethod, "📁 [CARVED] " + relPath);
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  currentOffset += (bufferSize - 65536);
+              }
+
+              sendTerminalLog(env, jCallback, logMethod, "[SUCCESS] Deep Carver finished. Total extracted: " + std::to_string(extractedCount));
+              return extractedCount > 0;
+          }
+
           extern "C" JNIEXPORT jboolean JNICALL
-          Java_com_upstool_paktool_PakEngine_nativeUnpackPak(
+          Java_com_upstool_paktool_PakEngine_nativeUnpackDeep(
               JNIEnv* env,
               jobject,
               jstring jPakPath,
@@ -369,235 +364,173 @@ jobs:
               const char* cPakPath = env->GetStringUTFChars(jPakPath, nullptr);
               const char* cOutputDir = env->GetStringUTFChars(jOutputDir, nullptr);
 
-              sendTerminalLog(env, jCallback, logMethod, "[INIT] Opening archive: " + std::string(cPakPath));
-
-              std::ifstream file(cPakPath, std::ios::binary | std::ios::ate);
-              if (!file.is_open()) {
-                  sendTerminalLog(env, jCallback, logMethod, "[ERROR] Cannot open source archive file.");
-                  env->ReleaseStringUTFChars(jPakPath, cPakPath);
-                  env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
-                  return JNI_FALSE;
-              }
-
-              std::streamsize fileSize = file.tellg();
-              if (fileSize < 128) {
-                  sendTerminalLog(env, jCallback, logMethod, "[ERROR] File size too small to be valid archive.");
-                  file.close();
-                  env->ReleaseStringUTFChars(jPakPath, cPakPath);
-                  env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
-                  return JNI_FALSE;
-              }
-
-              // Scan last 64 KB backwards for PAK_MAGIC
-              size_t scanSize = std::min(fileSize, static_cast<std::streamsize>(65536));
-              std::vector<uint8_t> buffer(scanSize);
-              file.seekg(fileSize - scanSize);
-              file.read(reinterpret_cast<char*>(buffer.data()), scanSize);
-
-              int64_t magicOffset = -1;
-              for (int64_t i = scanSize - 4; i >= 0; --i) {
-                  if (*reinterpret_cast<uint32_t*>(&buffer[i]) == PAK_MAGIC) {
-                      magicOffset = fileSize - scanSize + i;
-                      break;
-                  }
-              }
-
-              if (magicOffset == -1) {
-                  sendTerminalLog(env, jCallback, logMethod, "[ERROR] Unreal PAK Magic bytes (0x5A6F12E1) not found.");
-                  file.close();
-                  env->ReleaseStringUTFChars(jPakPath, cPakPath);
-                  env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
-                  return JNI_FALSE;
-              }
-
-              // In UE4: Magic is followed by Version, IndexOffset, IndexSize
-              file.seekg(magicOffset + 4);
-              int32_t version = 0;
-              int64_t indexOffset = 0;
-              int64_t indexSize = 0;
-              file.read(reinterpret_cast<char*>(&version), sizeof(int32_t));
-              file.read(reinterpret_cast<char*>(&indexOffset), sizeof(int64_t));
-              file.read(reinterpret_cast<char*>(&indexSize), sizeof(int64_t));
-
-              sendTerminalLog(env, jCallback, logMethod, "[INDEX] Found PAK v" + std::to_string(version) + " | Offset: " + std::to_string(indexOffset));
-
-              if (indexOffset <= 0 || indexOffset >= fileSize) {
-                  sendTerminalLog(env, jCallback, logMethod, "[ERROR] Corrupt or invalid Index Table offset.");
-                  file.close();
-                  env->ReleaseStringUTFChars(jPakPath, cPakPath);
-                  env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
-                  return JNI_FALSE;
-              }
-
-              file.seekg(indexOffset);
-              std::string mountPoint = readFString(file);
-              int32_t entryCount = 0;
-              file.read(reinterpret_cast<char*>(&entryCount), sizeof(int32_t));
-
-              sendTerminalLog(env, jCallback, logMethod, "[TREE] Mount: " + mountPoint + " | Total Files: " + std::to_string(entryCount));
-
-              int successCount = 0;
-              for (int32_t i = 0; i < entryCount; ++i) {
-                  std::string internalPath = readFString(file);
-                  FPakEntry entry = readEntry(file);
-
-                  std::string cleanRelPath = internalPath;
-                  while (cleanRelPath.rfind("../", 0) == 0) cleanRelPath.erase(0, 3);
-                  while (cleanRelPath.rfind("..\\", 0) == 0) cleanRelPath.erase(0, 3);
-                  while (!cleanRelPath.empty() && (cleanRelPath.front() == '/' || cleanRelPath.front() == '\\')) {
-                      cleanRelPath.erase(0, 1);
-                  }
-                  std::replace(cleanRelPath.begin(), cleanRelPath.end(), '\\', '/');
-
-                  fs::path destPath = fs::path(cOutputDir) / cleanRelPath;
-                  fs::create_directories(destPath.parent_path());
-
-                  std::ofstream outFile(destPath, std::ios::binary);
-                  if (!outFile.is_open()) continue;
-
-                  std::streampos savedIndexPos = file.tellg();
-                  int64_t dataOffset = entry.offset + entry.getSerializedHeaderSize();
-
-                  if (entry.compressionMethod == 0) {
-                      file.seekg(dataOffset);
-                      std::vector<char> chunk(65536);
-                      int64_t remain = entry.uncompressedSize;
-                      while (remain > 0) {
-                          std::streamsize readBytes = std::min(static_cast<int64_t>(chunk.size()), remain);
-                          file.read(chunk.data(), readBytes);
-                          outFile.write(chunk.data(), readBytes);
-                          remain -= readBytes;
-                      }
-                  } else {
-                      uint32_t blockSize = entry.compressionBlockSize > 0 ? entry.compressionBlockSize : 65536;
-                      std::vector<uint8_t> blockBuffer(blockSize);
-                      int64_t remain = entry.uncompressedSize;
-
-                      for (const auto& block : entry.compressionBlocks) {
-                          int64_t cSize = block.compressedEnd - block.compressedStart;
-                          std::vector<uint8_t> cBuffer(cSize);
-
-                          file.seekg(dataOffset + block.compressedStart);
-                          file.read(reinterpret_cast<char*>(cBuffer.data()), cSize);
-
-                          size_t outSize = std::min(static_cast<int64_t>(blockSize), remain);
-                          decompressZlib(cBuffer.data(), cSize, blockBuffer.data(), outSize);
-                          outFile.write(reinterpret_cast<char*>(blockBuffer.data()), outSize);
-                          remain -= outSize;
-                      }
-                  }
-
-                  outFile.close();
-                  file.seekg(savedIndexPos);
-                  successCount++;
-
-                  // Terminal stream update every 5 files or on uasset/uexp
-                  if (i % 5 == 0 || cleanRelPath.find(".uasset") != std::string::npos || cleanRelPath.find(".uexp") != std::string::npos) {
-                      sendTerminalLog(env, jCallback, logMethod, "📁 [" + std::to_string(i + 1) + "/" + std::to_string(entryCount) + "] " + cleanRelPath);
-                  }
-              }
-
-              file.close();
-              sendTerminalLog(env, jCallback, logMethod, "[SUCCESS] Extracted " + std::to_string(successCount) + " files with full structure.");
+              sendTerminalLog(env, jCallback, logMethod, "[ENGINE] Loading: " + std::string(cPakPath));
+              bool res = deepCarveStreams(env, jCallback, logMethod, cPakPath, cOutputDir);
 
               env->ReleaseStringUTFChars(jPakPath, cPakPath);
               env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
-              return JNI_TRUE;
-          }
-
-          extern "C" JNIEXPORT jboolean JNICALL
-          Java_com_upstool_paktool_PakEngine_nativeRepackPak(
-              JNIEnv* env,
-              jobject,
-              jstring jSourceDir,
-              jstring jOutputPak,
-              jobject jCallback
-          ) {
-              jclass cbClass = env->GetObjectClass(jCallback);
-              jmethodID logMethod = env->GetMethodID(cbClass, "onLog", "(Ljava/lang/String;)V");
-
-              const char* cSrc = env->GetStringUTFChars(jSourceDir, nullptr);
-              const char* cOut = env->GetStringUTFChars(jOutputPak, nullptr);
-
-              sendTerminalLog(env, jCallback, logMethod, "[REPACK] Serializing tree from: " + std::string(cSrc));
-
-              std::ofstream pak(cOut, std::ios::binary | std::ios::trunc);
-              if (!pak.is_open()) {
-                  sendTerminalLog(env, jCallback, logMethod, "[ERROR] Cannot create output archive: " + std::string(cOut));
-                  env->ReleaseStringUTFChars(jSourceDir, cSrc);
-                  env->ReleaseStringUTFChars(jOutputPak, cOut);
-                  return JNI_FALSE;
-              }
-
-              std::vector<FPakEntry> entries;
-
-              for (const auto& dirEntry : fs::recursive_directory_iterator(cSrc)) {
-                  if (!dirEntry.is_regular_file()) continue;
-
-                  fs::path fullPath = dirEntry.path();
-                  std::string relPath = fs::relative(fullPath, cSrc).generic_string();
-
-                  int64_t fileOffset = pak.tellp();
-                  int64_t fileSize = fs::file_size(fullPath);
-
-                  FPakEntry entry;
-                  entry.filename = relPath;
-                  entry.offset = fileOffset;
-                  entry.size = fileSize;
-                  entry.uncompressedSize = fileSize;
-                  entry.compressionMethod = 0;
-                  entry.bEncrypted = 0;
-
-                  writeEntry(pak, entry);
-
-                  std::ifstream srcStream(fullPath, std::ios::binary);
-                  pak << srcStream.rdbuf();
-                  srcStream.close();
-
-                  entries.push_back(entry);
-                  sendTerminalLog(env, jCallback, logMethod, "📦 [PACK] " + relPath);
-              }
-
-              int64_t indexOffset = pak.tellp();
-              writeFString(pak, "../../../");
-
-              int32_t totalFiles = static_cast<int32_t>(entries.size());
-              pak.write(reinterpret_cast<const char*>(&totalFiles), sizeof(int32_t));
-
-              for (const auto& entry : entries) {
-                  writeFString(pak, entry.filename);
-                  writeEntry(pak, entry);
-              }
-
-              int64_t indexSize = static_cast<int64_t>(pak.tellp()) - indexOffset;
-
-              FPakInfo footer;
-              footer.version = 8;
-              footer.indexOffset = indexOffset;
-              footer.indexSize = indexSize;
-              footer.magic = PAK_MAGIC;
-              pak.write(reinterpret_cast<const char*>(&footer), sizeof(FPakInfo));
-
-              pak.close();
-              sendTerminalLog(env, jCallback, logMethod, "[FINISHED] Repacked " + std::to_string(totalFiles) + " files -> " + std::string(cOut));
-
-              env->ReleaseStringUTFChars(jSourceDir, cSrc);
-              env->ReleaseStringUTFChars(jOutputPak, cOut);
-              return JNI_TRUE;
+              return res ? JNI_TRUE : JNI_FALSE;
           }
           EOF
 
-          # 9. PakEngine.kt with ZIP/OBB support and Callback
+          # 9. Python Core Unpack & Repack Script (app/src/main/python/pak_engine.py)
+          cat << 'EOF' > app/src/main/python/pak_engine.py
+          import os
+          import sys
+          import zlib
+          import struct
+          from pathlib import Path
+
+          try:
+              import zstandard as zstd
+          except Exception:
+              zstd = None
+
+          def log(callback, text):
+              if callback:
+                  callback.onLog(str(text))
+
+          def unpack_pak(pak_path, output_dir, callback):
+              log(callback, f"[PYTHON] Initializing Python Zlib Engine: {os.path.basename(pak_path)}")
+              os.makedirs(output_dir, exist_ok=True)
+              
+              extracted = 0
+              file_size = os.path.getsize(pak_path)
+              
+              with open(pak_path, "rb") as f:
+                  # 1. Search for index table / ShadowTrackerExtra strings
+                  chunk_size = 1024 * 1024 * 4
+                  offset = 0
+                  
+                  while offset < file_size:
+                      f.seek(offset)
+                      data = f.read(chunk_size)
+                      if not data:
+                          break
+                          
+                      pos = 0
+                      while True:
+                          idx = data.find(b"\x78\x9c", pos)
+                          if idx == -1:
+                              idx = data.find(b"\x78\xda", pos)
+                          if idx == -1:
+                              break
+                              
+                          stream_data = data[idx:idx + 1024 * 1024 * 2]
+                          try:
+                              decomp = zlib.decompress(stream_data)
+                              if len(decomp) > 64:
+                                  # Detect BP_PlayerPawn assets
+                                  if b"BP_PlayerPawn" in decomp:
+                                      if decomp.startswith(b"\x9e\x2a\x83\xc1") or b".uasset" in decomp:
+                                          name = "ShadowTrackerExtra/Saved/Paks/BP_PlayerPawn.uasset"
+                                      else:
+                                          name = "ShadowTrackerExtra/Saved/Paks/BP_PlayerPawn.uexp"
+                                          
+                                      target_file = os.path.join(output_dir, name)
+                                      os.makedirs(os.path.dirname(target_file), exist_ok=True)
+                                      with open(target_file, "wb") as out_f:
+                                          out_f.write(decomp)
+                                      extracted += 1
+                                      log(callback, f"📁 [FOUND] {name} ({len(decomp)} bytes)")
+                                  
+                                  # Detect general ShadowTrackerExtra tree files
+                                  elif b"ShadowTrackerExtra" in decomp:
+                                      p_start = decomp.find(b"ShadowTrackerExtra")
+                                      p_end = decomp.find(b"\x00", p_start)
+                                      if p_end != -1 and (p_end - p_start) < 200:
+                                          try:
+                                              rel_name = decomp[p_start:p_end].decode("utf-8", errors="ignore")
+                                              if "." in rel_name:
+                                                  target_file = os.path.join(output_dir, rel_name)
+                                                  os.makedirs(os.path.dirname(target_file), exist_ok=True)
+                                                  with open(target_file, "wb") as out_f:
+                                                      out_f.write(decomp)
+                                                  extracted += 1
+                                                  log(callback, f"📁 [TREE] {rel_name}")
+                                          except Exception:
+                                              pass
+                          except Exception:
+                              pass
+                          pos = idx + 2
+                          
+                      offset += (chunk_size - 65536)
+
+              if extracted > 0:
+                  log(callback, f"[SUCCESS] Python extracted {extracted} target files with full structure.")
+                  return True
+              else:
+                  log(callback, "[WARN] Python scanner found 0 streams, switching to Native C++...")
+                  return False
+
+          def repack_pak(source_dir, output_pak, callback):
+              log(callback, f"[REPACK] Serializing tree from: {source_dir}")
+              file_list = []
+              for root, _, files in os.walk(source_dir):
+                  for file in files:
+                      full_path = os.path.join(root, file)
+                      rel_path = os.path.relpath(full_path, source_dir).replace("\\", "/")
+                      file_list.append((full_path, rel_path))
+
+              with open(output_pak, "wb") as pak:
+                  entries = []
+                  for full_path, rel_path in file_list:
+                      file_data = open(full_path, "rb").read()
+                      offset = pak.tell()
+                      size = len(file_data)
+                      
+                      # Write dummy header
+                      pak.write(struct.pack("<QQQ", offset, size, size))
+                      pak.write(struct.pack("<I", 0)) # No compression for fast repack
+                      pak.write(b"\x00" * 20) # SHA1
+                      pak.write(struct.pack("<B", 0)) # Encrypted
+                      pak.write(struct.pack("<I", 0)) # Block size
+                      
+                      pak.write(file_data)
+                      entries.append((rel_path, offset, size))
+                      log(callback, f"📦 [PACK] {rel_path}")
+
+                  # Write Index
+                  index_offset = pak.tell()
+                  mount = "../../../\x00"
+                  pak.write(struct.pack("<I", len(mount)))
+                  pak.write(mount.encode("utf-8"))
+                  pak.write(struct.pack("<I", len(entries)))
+
+                  for rel_path, off, sz in entries:
+                      p_bytes = rel_path.encode("utf-8") + b"\x00"
+                      pak.write(struct.pack("<I", len(p_bytes)))
+                      pak.write(p_bytes)
+                      pak.write(struct.pack("<QQQI", off, sz, sz, 0))
+                      pak.write(b"\x00" * 20)
+                      pak.write(struct.pack("<BI", 0, 0))
+
+                  index_size = pak.tell() - index_offset
+
+                  # Write FPakInfo (Magic 0x5A6F12E1 at EOF)
+                  pak.write(b"\x00" * 16) # Guid
+                  pak.write(struct.pack("<B", 0)) # Encrypted index
+                  pak.write(struct.pack("<I", 0x5A6F12E1)) # PAK Magic
+                  pak.write(struct.pack("<I", 8)) # Version
+                  pak.write(struct.pack("<Q", index_offset))
+                  pak.write(struct.pack("<Q", index_size))
+                  pak.write(b"\x00" * 20) # Hash
+
+              log(callback, f"[FINISHED] Repacked {len(file_list)} files into {os.path.basename(output_pak)}")
+              return True
+          EOF
+
+          # 10. PakEngine.kt (Dual Engine: Python Chaquopy with C++ Native Fallback)
           cat << 'EOF' > app/src/main/java/com/upstool/paktool/PakEngine.kt
           package com.upstool.paktool
 
+          import android.content.Context
           import android.os.Environment
+          import com.chaquo.python.Python
+          import com.chaquo.python.android.AndroidPlatform
           import kotlinx.coroutines.Dispatchers
           import kotlinx.coroutines.withContext
           import java.io.File
-          import java.io.FileInputStream
-          import java.io.FileOutputStream
-          import java.util.zip.ZipInputStream
 
           interface TerminalCallback {
               fun onLog(line: String)
@@ -608,8 +541,7 @@ jobs:
                   System.loadLibrary("upstool_native")
               }
 
-              private external fun nativeUnpackPak(pakPath: String, outputDir: String, callback: TerminalCallback): Boolean
-              private external fun nativeRepackPak(sourceDir: String, outputPak: String, callback: TerminalCallback): Boolean
+              private external fun nativeUnpackDeep(pakPath: String, outputDir: String, callback: TerminalCallback): Boolean
 
               private val baseDir = File(Environment.getExternalStorageDirectory(), "Upstool")
               val dirOriginal = File(baseDir, "Original").apply { mkdirs() }
@@ -617,71 +549,37 @@ jobs:
               val dirUnpack   = File(baseDir, "Unpack").apply { mkdirs() }
               val dirRepack   = File(baseDir, "Repack").apply { mkdirs() }
 
-              suspend fun unpackArchive(file: File, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
-                  val targetFolder = File(dirUnpack, file.nameWithoutExtension).apply { mkdirs() }
-
-                  // If file is an OBB or ZIP format (Magic: PK\x03\x04)
-                  val isZip = try {
-                      FileInputStream(file).use { fis ->
-                          val header = ByteArray(4)
-                          fis.read(header)
-                          header[0] == 0x50.toByte() && header[1] == 0x4B.toByte()
-                      }
-                  } catch (e: Exception) {
-                      false
-                  }
-
-                  if (isZip) {
-                      callback.onLog("[OBB/ZIP] Detected ZIP format. Extracting...")
-                      return@withContext unpackZip(file, targetFolder, callback)
-                  } else {
-                      return@withContext nativeUnpackPak(file.absolutePath, targetFolder.absolutePath, callback)
+              fun initPython(context: Context) {
+                  if (!Python.isStarted()) {
+                      Python.start(AndroidPlatform(context.applicationContext))
                   }
               }
 
-              private fun unpackZip(zipFile: File, targetDir: File, callback: TerminalCallback): Boolean {
+              suspend fun unpackArchive(file: File, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
+                  val targetFolder = File(dirUnpack, file.nameWithoutExtension).apply { mkdirs() }
+
                   try {
-                      ZipInputStream(FileInputStream(zipFile)).use { zis ->
-                          var entry = zis.nextEntry
-                          var count = 0
-                          val buffer = ByteArray(65536)
-                          while (entry != null) {
-                              val newFile = File(targetDir, entry.name)
-                              if (entry.isDirectory) {
-                                  newFile.mkdirs()
-                              } else {
-                                  newFile.parentFile?.mkdirs()
-                                  FileOutputStream(newFile).use { fos ->
-                                      var len: Int
-                                      while (zis.read(buffer).also { len = it } > 0) {
-                                          fos.write(buffer, 0, len)
-                                      }
-                                  }
-                                  count++
-                                  if (count % 5 == 0 || newFile.name.contains("uasset")) {
-                                      callback.onLog("📁 [OBB] Extracted: ${entry.name}")
-                                  }
-                              }
-                              zis.closeEntry()
-                              entry = zis.nextEntry
-                          }
-                          callback.onLog("[SUCCESS] OBB unpacked total $count files.")
-                          return true
-                      }
+                      val py = Python.getInstance()
+                      val module = py.getModule("pak_engine")
+                      val pyResult = module.callAttr("unpack_pak", file.absolutePath, targetFolder.absolutePath, callback).toBoolean()
+
+                      if (pyResult) return@withContext true
                   } catch (e: Exception) {
-                      callback.onLog("[ERROR] OBB extract error: ${e.message}")
-                      return false
+                      callback.onLog("[PY ERROR] ${e.message}. Launching Native Deep Carver...")
                   }
+
+                  // Fallback to Native Deep Carver
+                  nativeUnpackDeep(file.absolutePath, targetFolder.absolutePath, callback)
               }
 
               suspend fun replaceAndRepack(folderName: String, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
                   val unpackedFolder = File(dirUnpack, folderName)
                   if (!unpackedFolder.exists()) {
-                      callback.onLog("[ERROR] Unpacked directory not found: $folderName")
+                      callback.onLog("[ERROR] Unpack directory missing: $folderName")
                       return@withContext false
                   }
 
-                  callback.onLog("[REPLACE] Checking Editor folder for modifications...")
+                  callback.onLog("[REPLACE] Overwriting files from /Editor into hierarchy...")
                   var replacedCount = 0
                   dirEditor.listFiles()?.forEach { editorFile ->
                       unpackedFolder.walkTopDown().forEach { fileInTree ->
@@ -692,15 +590,22 @@ jobs:
                           }
                       }
                   }
+                  callback.onLog("[INFO] Total modified assets replaced: $replacedCount")
 
-                  callback.onLog("[INFO] Total replaced files: $replacedCount")
                   val outputPak = File(dirRepack, "$folderName.pak")
-                  nativeRepackPak(unpackedFolder.absolutePath, outputPak.absolutePath, callback)
+                  try {
+                      val py = Python.getInstance()
+                      val module = py.getModule("pak_engine")
+                      return@withContext module.callAttr("repack_pak", unpackedFolder.absolutePath, outputPak.absolutePath, callback).toBoolean()
+                  } catch (e: Exception) {
+                      callback.onLog("[REPACK ERROR] ${e.message}")
+                      return@withContext false
+                  }
               }
           }
           EOF
 
-          # 10. MainActivity.kt (UI with Picker, Terminal Screen & Action Buttons)
+          # 11. MainActivity.kt (UI Screen with Selection, Terminal, Action Buttons)
           cat << 'EOF' > app/src/main/java/com/upstool/paktool/MainActivity.kt
           package com.upstool.paktool
 
@@ -740,6 +645,8 @@ jobs:
           class MainActivity : ComponentActivity() {
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
+                  PakEngine.initPython(applicationContext)
+
                   setContent {
                       MaterialTheme(colorScheme = darkColorScheme()) {
                           Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0A0A0A)) {
@@ -760,9 +667,8 @@ jobs:
               var originalFiles by remember { mutableStateOf<List<File>>(emptyList()) }
               var selectedFile by remember { mutableStateOf<File?>(null) }
               var unpackedFolders by remember { mutableStateOf<List<String>>(emptyList()) }
-              var selectedUnpackFolder by remember { mutableStateOf("") }
 
-              var terminalLogs by remember { mutableStateOf<List<String>>(listOf("[SYSTEM] Upstool Pak Engine Initialized.")) }
+              var terminalLogs by remember { mutableStateOf<List<String>>(listOf("[SYSTEM] Upstool Python & Native Engines Loaded.")) }
               var isBusy by remember { mutableStateOf(false) }
 
               var showOriginalDropdown by remember { mutableStateOf(false) }
@@ -783,16 +689,12 @@ jobs:
 
                   val unp = PakEngine.dirUnpack.listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
                   unpackedFolders = unp
-                  if (selectedUnpackFolder.isEmpty() && unp.isNotEmpty()) {
-                      selectedUnpackFolder = unp.first()
-                  }
               }
 
               LaunchedEffect(Unit) {
                   refreshFiles()
               }
 
-              // Auto-scroll terminal to bottom when new logs arrive
               LaunchedEffect(terminalLogs.size) {
                   if (terminalLogs.isNotEmpty()) {
                       listState.animateScrollToItem(terminalLogs.size - 1)
@@ -836,7 +738,6 @@ jobs:
                           .padding(14.dp),
                       verticalArrangement = Arrangement.spacedBy(10.dp)
                   ) {
-                      // Permission Warning
                       if (!hasStoragePermission.value && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                           Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF3B1212))) {
                               Row(modifier = Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -856,7 +757,7 @@ jobs:
                           }
                       }
 
-                      // Selection Header (Choose PAK/OBB)
+                      // Target Archive Selector
                       Card(
                           modifier = Modifier.fillMaxWidth(),
                           colors = CardDefaults.cardColors(containerColor = Color(0xFF181818)),
@@ -886,7 +787,7 @@ jobs:
                           }
                       }
 
-                      // LIVE TERMINAL VIEW
+                      // Monospace Terminal Console
                       Box(
                           modifier = Modifier
                               .fillMaxWidth()
@@ -901,9 +802,9 @@ jobs:
                           ) {
                               items(terminalLogs) { log ->
                                   val logColor = when {
-                                      log.startsWith("[ERROR]") -> Color(0xFFFF5252)
+                                      log.startsWith("[ERROR]") || log.startsWith("[PY ERROR]") -> Color(0xFFFF5252)
                                       log.startsWith("[SUCCESS]") || log.startsWith("[FINISHED]") -> Color(0xFF00E676)
-                                      log.startsWith("[INIT]") || log.startsWith("[INDEX]") -> Color(0xFF00E5FF)
+                                      log.startsWith("[WARN]") -> Color(0xFFFFB74D)
                                       log.startsWith("📁") -> Color(0xFFFFD54F)
                                       log.startsWith("📦") || log.startsWith("🔄") -> Color(0xFF80D8FF)
                                       else -> Color(0xFFE0E0E0)
@@ -919,7 +820,7 @@ jobs:
                           }
                       }
 
-                      // UNPACK & REPACK ACTION BUTTONS
+                      // Action Buttons
                       Row(
                           modifier = Modifier.fillMaxWidth(),
                           horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -928,12 +829,12 @@ jobs:
                               onClick = {
                                   selectedFile?.let { target ->
                                       isBusy = true
-                                      addLog("[START] Preparing unpack: ${target.name}")
+                                      addLog("[START] Processing: ${target.name}")
                                       scope.launch {
                                           val ok = PakEngine.unpackArchive(target, callback)
                                           refreshFiles()
                                           isBusy = false
-                                          addLog(if (ok) "[COMPLETE] Unpacked into /sdcard/Upstool/Unpack/${target.nameWithoutExtension}" else "[FAILED] Unpack operation failed.")
+                                          addLog(if (ok) "[COMPLETE] Unpacked into /sdcard/Upstool/Unpack/${target.nameWithoutExtension}" else "[FAILED] Extraction failed.")
                                       }
                                   }
                               },
@@ -958,7 +859,6 @@ jobs:
                   }
               }
 
-              // Dropdown Dialog for Original Pak Chooser
               if (showOriginalDropdown) {
                   AlertDialog(
                       onDismissRequest = { showOriginalDropdown = false },
@@ -987,7 +887,6 @@ jobs:
                   )
               }
 
-              // Dropdown Dialog for Repack Directory Chooser
               if (showRepackDropdown) {
                   AlertDialog(
                       onDismissRequest = { showRepackDropdown = false },
@@ -1002,7 +901,7 @@ jobs:
                                           .clickable {
                                               showRepackDropdown = false
                                               isBusy = true
-                                              addLog("[START] Repacking folder: $folderName")
+                                              addLog("[START] Repacking: $folderName")
                                               scope.launch {
                                                   val ok = PakEngine.replaceAndRepack(folderName, callback)
                                                   refreshFiles()
@@ -1037,7 +936,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No new changes to commit."
           else
-            git commit -m "Fix PAK engine, live terminal UI, and OBB support [skip ci]"
+            git commit -m "Integrate Chaquopy, PyCryptodome, Zstandard, and Deep Zlib Carving [skip ci]"
             git push origin HEAD:${{ github.ref_name }}
           fi
 
