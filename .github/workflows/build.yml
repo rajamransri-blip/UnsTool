@@ -25,17 +25,22 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Generate Official Gradle 8.5 Wrapper (Isolated from Gradle 9)
+      - name: Setup Python 3.10 for Chaquopy
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Generate Official Gradle 8.5 Wrapper Safely
         run: |
           TMP_DIR=$(mktemp -d)
-          cd "$TMP_DIR"
-          gradle wrapper --gradle-version 8.5 --distribution-type bin
-          cd -
+          echo 'rootProject.name = "wrapper-init"' > "$TMP_DIR/settings.gradle"
+          touch "$TMP_DIR/build.gradle"
+          (cd "$TMP_DIR" && gradle wrapper --gradle-version 8.5 --distribution-type bin)
           mkdir -p gradle/wrapper
           cp "$TMP_DIR/gradlew" ./gradlew
           cp "$TMP_DIR/gradle/wrapper/gradle-wrapper.jar" ./gradle/wrapper/
           cp "$TMP_DIR/gradle/wrapper/gradle-wrapper.properties" ./gradle/wrapper/
-          chmod +x gradlew
+          chmod +x ./gradlew
           rm -rf "$TMP_DIR"
 
       - name: Generate Complete Source Tree
@@ -45,7 +50,7 @@ jobs:
           mkdir -p app/src/main/java/com/upstool/paktool
           mkdir -p app/src/main/res/values
 
-          # 1. gradle.properties
+          # 1. gradle.properties (AndroidX + JVM Memory)
           cat << 'EOF' > gradle.properties
           org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8
           android.useAndroidX=true
@@ -91,7 +96,7 @@ jobs:
           }
           EOF
 
-          # 4. app/build.gradle (Chaquopy + Python + Native Zlib)
+          # 4. app/build.gradle (Chaquopy + PyCryptodome + Zstandard + NDK)
           cat << 'EOF' > app/build.gradle
           apply plugin: 'com.android.application'
           apply plugin: 'org.jetbrains.kotlin.android'
@@ -179,7 +184,7 @@ jobs:
 
           touch app/proguard-rules.pro
 
-          # 5. Strings resource
+          # 5. Strings Resource
           cat << 'EOF' > app/src/main/res/values/strings.xml
           <resources>
               <string name="app_name">Upstool</string>
@@ -217,7 +222,7 @@ jobs:
           </manifest>
           EOF
 
-          # 7. CMakeLists.txt
+          # 7. CMakeLists.txt (Links zlib directly)
           cat << 'EOF' > app/src/main/cpp/CMakeLists.txt
           cmake_minimum_required(VERSION 3.22.1)
           project("upstool_native")
@@ -229,11 +234,10 @@ jobs:
           )
 
           find_library(log-lib log)
-          find_package(ZLIB REQUIRED)
 
           target_link_libraries(upstool_native
               ${log-lib}
-              ZLIB::ZLIB
+              z
           )
           EOF
 
@@ -372,7 +376,7 @@ jobs:
           }
           EOF
 
-          # 9. Python Core Module (app/src/main/python/pak_engine.py)
+          # 9. Python Core Module (pak_engine.py)
           cat << 'EOF' > app/src/main/python/pak_engine.py
           import os
           import sys
@@ -789,8 +793,9 @@ jobs:
                           ) {
                               items(terminalLogs) { log ->
                                   val logColor = when {
-                                      log.startsWith("[ERROR]") || log.startsWith("[REPACK ERROR]") -> Color(0xFFFF5252)
+                                      log.startsWith("[ERROR]") || log.startsWith("[PY ERROR]") || log.startsWith("[REPACK ERROR]") -> Color(0xFFFF5252)
                                       log.startsWith("[SUCCESS]") || log.startsWith("[FINISHED]") -> Color(0xFF00E676)
+                                      log.startsWith("[WARN]") || log.startsWith("[PY]") -> Color(0xFFFFB74D)
                                       log.startsWith("📁") -> Color(0xFFFFD54F)
                                       log.startsWith("📦") || log.startsWith("🔄") -> Color(0xFF80D8FF)
                                       else -> Color(0xFFE0E0E0)
@@ -814,7 +819,7 @@ jobs:
                               onClick = {
                                   selectedFile?.let { target ->
                                       isBusy = true
-                                      addLog("[START] Preparing unpack: ${target.name}")
+                                      addLog("[START] Processing: ${target.name}")
                                       scope.launch {
                                           val ok = PakEngine.unpackArchive(target, callback)
                                           refreshFiles()
@@ -916,7 +921,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No new changes to commit."
           else
-            git commit -m "Fix Gradle wrapper isolation, Chaquopy, and Deep Carving [skip ci]"
+            git commit -m "Auto-generate full Upstool source tree [skip ci]"
             git push origin HEAD:${{ github.ref_name }}
           fi
 
@@ -925,7 +930,7 @@ jobs:
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
 
-      - name: Build Debug APK
+      - name: Build Debug APK with Gradle 8.5
         run: ./gradlew assembleDebug --stacktrace
 
       - name: Upload APK Artifact
