@@ -36,6 +36,8 @@ import java.io.File
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        PakEngine.initPython(applicationContext)
+
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0A0A0A)) {
@@ -56,9 +58,8 @@ fun TerminalUnpackerScreen() {
     var originalFiles by remember { mutableStateOf<List<File>>(emptyList()) }
     var selectedFile by remember { mutableStateOf<File?>(null) }
     var unpackedFolders by remember { mutableStateOf<List<String>>(emptyList()) }
-    var selectedUnpackFolder by remember { mutableStateOf("") }
 
-    var terminalLogs by remember { mutableStateOf<List<String>>(listOf("[SYSTEM] Upstool Pak Engine Initialized.")) }
+    var terminalLogs by remember { mutableStateOf<List<String>>(listOf("[SYSTEM] Upstool Python & Native Zlib Engines Loaded.")) }
     var isBusy by remember { mutableStateOf(false) }
 
     var showOriginalDropdown by remember { mutableStateOf(false) }
@@ -79,16 +80,12 @@ fun TerminalUnpackerScreen() {
 
         val unp = PakEngine.dirUnpack.listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
         unpackedFolders = unp
-        if (selectedUnpackFolder.isEmpty() && unp.isNotEmpty()) {
-            selectedUnpackFolder = unp.first()
-        }
     }
 
     LaunchedEffect(Unit) {
         refreshFiles()
     }
 
-    // Auto-scroll terminal to bottom when new logs arrive
     LaunchedEffect(terminalLogs.size) {
         if (terminalLogs.isNotEmpty()) {
             listState.animateScrollToItem(terminalLogs.size - 1)
@@ -132,7 +129,6 @@ fun TerminalUnpackerScreen() {
                 .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Permission Warning
             if (!hasStoragePermission.value && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF3B1212))) {
                     Row(modifier = Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -152,7 +148,6 @@ fun TerminalUnpackerScreen() {
                 }
             }
 
-            // Selection Header (Choose PAK/OBB)
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF181818)),
@@ -182,7 +177,6 @@ fun TerminalUnpackerScreen() {
                 }
             }
 
-            // LIVE TERMINAL VIEW
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -197,9 +191,9 @@ fun TerminalUnpackerScreen() {
                 ) {
                     items(terminalLogs) { log ->
                         val logColor = when {
-                            log.startsWith("[ERROR]") -> Color(0xFFFF5252)
+                            log.startsWith("[ERROR]") || log.startsWith("[PY ERROR]") || log.startsWith("[REPACK ERROR]") -> Color(0xFFFF5252)
                             log.startsWith("[SUCCESS]") || log.startsWith("[FINISHED]") -> Color(0xFF00E676)
-                            log.startsWith("[INIT]") || log.startsWith("[INDEX]") -> Color(0xFF00E5FF)
+                            log.startsWith("[WARN]") || log.startsWith("[PY]") -> Color(0xFFFFB74D)
                             log.startsWith("📁") -> Color(0xFFFFD54F)
                             log.startsWith("📦") || log.startsWith("🔄") -> Color(0xFF80D8FF)
                             else -> Color(0xFFE0E0E0)
@@ -215,7 +209,6 @@ fun TerminalUnpackerScreen() {
                 }
             }
 
-            // UNPACK & REPACK ACTION BUTTONS
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -224,12 +217,12 @@ fun TerminalUnpackerScreen() {
                     onClick = {
                         selectedFile?.let { target ->
                             isBusy = true
-                            addLog("[START] Preparing unpack: ${target.name}")
+                            addLog("[START] Processing: ${target.name}")
                             scope.launch {
                                 val ok = PakEngine.unpackArchive(target, callback)
                                 refreshFiles()
                                 isBusy = false
-                                addLog(if (ok) "[COMPLETE] Unpacked into /sdcard/Upstool/Unpack/${target.nameWithoutExtension}" else "[FAILED] Unpack operation failed.")
+                                addLog(if (ok) "[COMPLETE] Unpacked into /sdcard/Upstool/Unpack/${target.nameWithoutExtension}" else "[FAILED] Extraction failed.")
                             }
                         }
                     },
@@ -254,7 +247,6 @@ fun TerminalUnpackerScreen() {
         }
     }
 
-    // Dropdown Dialog for Original Pak Chooser
     if (showOriginalDropdown) {
         AlertDialog(
             onDismissRequest = { showOriginalDropdown = false },
@@ -283,7 +275,6 @@ fun TerminalUnpackerScreen() {
         )
     }
 
-    // Dropdown Dialog for Repack Directory Chooser
     if (showRepackDropdown) {
         AlertDialog(
             onDismissRequest = { showRepackDropdown = false },
@@ -298,7 +289,7 @@ fun TerminalUnpackerScreen() {
                                 .clickable {
                                     showRepackDropdown = false
                                     isBusy = true
-                                    addLog("[START] Repacking folder: $folderName")
+                                    addLog("[START] Repacking: $folderName")
                                     scope.launch {
                                         val ok = PakEngine.replaceAndRepack(folderName, callback)
                                         refreshFiles()

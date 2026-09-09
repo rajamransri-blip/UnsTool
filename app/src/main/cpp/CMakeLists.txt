@@ -8,9 +8,8 @@ add_library(upstool_native SHARED
 )
 
 find_library(log-lib log)
-find_package(ZLIB REQUIRED)
 
 target_link_libraries(upstool_native
     ${log-lib}
-    ZLIB::ZLIB
+    z
 )
