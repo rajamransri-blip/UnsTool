@@ -45,7 +45,6 @@ object PakEngine {
             val module = py.getModule("pak_engine")
             val pyResult = module.callAttr("unpack_pak", file.absolutePath, targetFolder.absolutePath, callback).toBoolean()
             if (pyResult) {
-                // Copy extracted Lua into dedicated Lua/Original folder
                 targetFolder.walkTopDown().filter { it.extension.lowercase() == "lua" }.forEach { luaF ->
                     luaF.copyTo(File(dirLuaOriginal, luaF.name), overwrite = true)
                 }
@@ -60,11 +59,11 @@ object PakEngine {
     suspend fun replaceAndRepack(folderName: String, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
         val unpackedFolder = File(dirUnpack, folderName)
         if (!unpackedFolder.exists()) {
-            callback.onLog("[ERROR] Unpack folder not found: $folderName")
+            callback.onLog("[ERROR] Unpack folder missing: $folderName")
             return@withContext false
         }
 
-        callback.onLog("[REPLACE] Checking Editor folder for replacements...")
+        callback.onLog("[REPLACE] Checking Editor folder for modified assets...")
         var replaced = 0
         dirEditor.listFiles()?.forEach { editorFile ->
             unpackedFolder.walkTopDown().forEach { fileInTree ->
@@ -112,6 +111,7 @@ object PakEngine {
     fun getAllLuaFiles(): List<File> {
         val set = mutableSetOf<File>()
         dirLuaOriginal.listFiles()?.filter { it.extension.lowercase() in listOf("lua", "luac") }?.let { set.addAll(it) }
+        dirLuaDecompiled.listFiles()?.filter { it.extension.lowercase() in listOf("lua", "luac") }?.let { set.addAll(it) }
         dirUnpack.walkTopDown().filter { it.extension.lowercase() in listOf("lua", "luac") }.let { set.addAll(it) }
         return set.toList()
     }
