@@ -25,7 +25,6 @@ object PakEngine {
     val dirUnpack   = File(baseDir, "Unpack").apply { mkdirs() }
     val dirRepack   = File(baseDir, "Repack").apply { mkdirs() }
 
-    // Dedicated Lua directory structure
     val dirLuaOriginal   = File(baseDir, "Lua/Original").apply { mkdirs() }
     val dirLuaDecompiled = File(baseDir, "Lua/Decompiled").apply { mkdirs() }
     val dirLuaCompiled   = File(baseDir, "Lua/Compiled").apply { mkdirs() }
@@ -46,7 +45,7 @@ object PakEngine {
             val module = py.getModule("pak_engine")
             val pyResult = module.callAttr("unpack_pak", file.absolutePath, targetFolder.absolutePath, callback).toBoolean()
             if (pyResult) {
-                // Auto copy extracted Lua to Lua/Original
+                // Copy extracted Lua into dedicated Lua/Original folder
                 targetFolder.walkTopDown().filter { it.extension.lowercase() == "lua" }.forEach { luaF ->
                     luaF.copyTo(File(dirLuaOriginal, luaF.name), overwrite = true)
                 }
@@ -61,11 +60,11 @@ object PakEngine {
     suspend fun replaceAndRepack(folderName: String, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
         val unpackedFolder = File(dirUnpack, folderName)
         if (!unpackedFolder.exists()) {
-            callback.onLog("[ERROR] Unpack directory missing: $folderName")
+            callback.onLog("[ERROR] Unpack folder not found: $folderName")
             return@withContext false
         }
 
-        callback.onLog("[REPLACE] Checking Editor folder for files...")
+        callback.onLog("[REPLACE] Checking Editor folder for replacements...")
         var replaced = 0
         dirEditor.listFiles()?.forEach { editorFile ->
             unpackedFolder.walkTopDown().forEach { fileInTree ->

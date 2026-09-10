@@ -9,7 +9,6 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -273,7 +272,7 @@ fun LuaDecompileScreen(onBack: () -> Unit) {
 
         Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))) {
             Row(modifier = Modifier.fillMaxWidth().clickable { showPicker = true }.padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(selectedFile?.name ?: "No Lua in /Lua/Original or /Unpack", color = Color(0xFF00E676), fontFamily = FontFamily.Monospace)
+                Text(selectedFile?.name ?: "No Lua found", color = Color(0xFF00E676), fontFamily = FontFamily.Monospace)
                 Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Color.White)
             }
         }
@@ -295,7 +294,7 @@ fun LuaDecompileScreen(onBack: () -> Unit) {
                     selectedFile?.let { file ->
                         scope.launch {
                             decompiledCode = PakEngine.decompileLua(file)
-                            status = "Saved to: /sdcard/Upstool/Lua/Decompiled/${file.name}"
+                            status = "Saved: /sdcard/Upstool/Lua/Decompiled/${file.name}"
                         }
                     }
                 },
@@ -333,7 +332,7 @@ fun LuaCompileScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var scriptName by remember { mutableStateOf("BRPlayerCharacterBase.lua") }
     var luaSource by remember {
-        mutableStateOf("-- BRPlayerCharacterBase.lua Script\nlocal Base = {}\n\nfunction Base:InitCharacterBase()\n    print('Character Base Configured')\nend\n\nreturn Base")
+        mutableStateOf("-- BRPlayerCharacterBase.lua Script\nlocal Character = {}\n\nfunction Character:InitCharacterBase()\n    print('Character Base Configured')\nend\n\nreturn Character")
     }
     var status by remember { mutableStateOf("") }
 
@@ -365,7 +364,7 @@ fun LuaCompileScreen(onBack: () -> Unit) {
             onClick = {
                 scope.launch {
                     PakEngine.saveCompiledLua(scriptName, luaSource)
-                    status = "Saved to /sdcard/Upstool/Lua/Compiled and copied to /Editor!"
+                    status = "Saved to /sdcard/Upstool/Lua/Compiled & synced to /Editor!"
                 }
             },
             modifier = Modifier.fillMaxWidth().height(48.dp),
@@ -404,7 +403,6 @@ fun SmartHexEditorScreen(onBack: () -> Unit) {
             Text("SMART HEX & BYTE EDITOR", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
         }
 
-        // File Picker Dropdown
         Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))) {
             Row(modifier = Modifier.fillMaxWidth().clickable { showPicker = true }.padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(selectedFile?.name ?: "No .uasset/.uexp in /Unpack", color = Color(0xFF00E676), fontFamily = FontFamily.Monospace)
@@ -412,7 +410,6 @@ fun SmartHexEditorScreen(onBack: () -> Unit) {
             }
         }
 
-        // Find Box
         OutlinedTextField(
             value = searchInput,
             onValueChange = { searchInput = it },
@@ -450,7 +447,6 @@ fun SmartHexEditorScreen(onBack: () -> Unit) {
             }
         )
 
-        // Matches Box
         if (occurrences.isNotEmpty()) {
             Text("FOUND OCCURRENCES (TAP TO INSPECT/EDIT):", color = Color.LightGray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
             Card(
@@ -479,7 +475,6 @@ fun SmartHexEditorScreen(onBack: () -> Unit) {
             }
         }
 
-        // Replace Field
         OutlinedTextField(
             value = replaceInput,
             onValueChange = { replaceInput = it },
@@ -493,7 +488,6 @@ fun SmartHexEditorScreen(onBack: () -> Unit) {
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Action Buttons
         Button(
             onClick = {
                 selectedFile?.let { file ->
@@ -508,7 +502,6 @@ fun SmartHexEditorScreen(onBack: () -> Unit) {
                                 replaceInput.split(" ").mapNotNull { it.toIntOrNull(16)?.toByte() }.toByteArray()
                             } else replaceInput.toByteArray(Charsets.UTF_8)
 
-                            // Auto-pad with 0x00 to preserve UE4 offsets
                             if (rBytes.size < sBytes.size) {
                                 rBytes = rBytes + ByteArray(sBytes.size - rBytes.size) { 0x00 }
                             } else if (rBytes.size > sBytes.size) {

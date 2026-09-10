@@ -47,10 +47,12 @@ static bool deepCarvePak(const std::string& pakPath, const std::string& outputDi
         return false;
     }
 
-    sendLog(env, callback, logMethod, "[NATIVE SCAN] Scanning archive chunks for UE4 bytecode & Lua...");
+    sendLog(env, callback, logMethod, "[NATIVE SCAN] Scanning archive for UE4 and Lua bytecode...");
 
     fs::path coreDir = fs::path(outputDir) / "ShadowTrackerExtra" / "Content" / "BluePrints" / "Core";
+    fs::path luaDir  = fs::path(outputDir) / "ShadowTrackerExtra" / "Content" / "Lua" / "GameLua" / "Mod" / "BRMod" / "Gameplay" / "Core";
     fs::create_directories(coreDir);
+    fs::create_directories(luaDir);
 
     pak.seekg(0, std::ios::end);
     size_t fileSize = pak.tellg();
@@ -133,7 +135,7 @@ Java_com_upstool_paktool_PakEngine_nativeUnpackDeep(
     const char* cPakPath = env->GetStringUTFChars(jPakPath, nullptr);
     const char* cOutputDir = env->GetStringUTFChars(jOutputDir, nullptr);
 
-    sendLog(env, jCallback, logMethod, "[CORE] Native chunk splitter initiated.");
+    sendLog(env, jCallback, logMethod, "[CORE] Native chunk extractor invoked.");
     bool result = deepCarvePak(cPakPath, cOutputDir, env, jCallback, logMethod);
 
     env->ReleaseStringUTFChars(jPakPath, cPakPath);
