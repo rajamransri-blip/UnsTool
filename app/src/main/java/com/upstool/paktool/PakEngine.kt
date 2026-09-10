@@ -44,9 +44,8 @@ object PakEngine {
                     input.copyTo(output)
                 }
             }
-            callback.onLog("[MANIFEST] bgmi.csv copied to cache.")
         } catch (e: Exception) {
-            callback.onLog("[MANIFEST] Could not copy bgmi.csv: ${e.message}")
+            callback.onLog("[WARN] Manifest load error: ${e.message}")
         }
 
         try {
@@ -60,7 +59,7 @@ object PakEngine {
             ).toBoolean()
             if (pyResult) return@withContext true
         } catch (e: Exception) {
-            callback.onLog("[PY] Switching to native fallback: ${e.message}")
+            callback.onLog("[PY] Switching to native deep engine: ${e.message}")
         }
 
         nativeUnpackDeep(file.absolutePath, targetFolder.absolutePath, callback, context.assets)
@@ -73,18 +72,18 @@ object PakEngine {
             return@withContext false
         }
 
-        callback.onLog("[REPLACE] Checking Editor folder...")
+        callback.onLog("[REPLACE] Checking Editor folder for modified assets...")
         var replaced = 0
         dirEditor.listFiles()?.forEach { editorFile ->
             unpackedFolder.walkTopDown().forEach { fileInTree ->
                 if (fileInTree.name.equals(editorFile.name, ignoreCase = true)) {
                     editorFile.copyTo(fileInTree, overwrite = true)
                     replaced++
-                    callback.onLog("🔄 [REPLACED] ${editorFile.name} -> ${fileInTree.relativeTo(unpackedFolder).path}")
+                    callback.onLog("🔄 [REPLACED] ${editorFile.name} (${editorFile.length() / 1024} KB)")
                 }
             }
         }
-        callback.onLog("[INFO] $replaced files replaced.")
+        callback.onLog("[INFO] $replaced files replaced with actual edited versions.")
 
         val outputPak = File(dirRepack, "$folderName.pak")
         try {

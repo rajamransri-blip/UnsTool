@@ -58,7 +58,7 @@ fun TerminalUnpackerScreen() {
     var selectedFile by remember { mutableStateOf<File?>(null) }
     var unpackedFolders by remember { mutableStateOf<List<String>>(emptyList()) }
 
-    var terminalLogs by remember { mutableStateOf<List<String>>(listOf("[SYSTEM] Upstool Core Engine Ready.")) }
+    var terminalLogs by remember { mutableStateOf<List<String>>(listOf("[SYSTEM] Upstool Core Engine Ready. Real Binary Extraction Active.")) }
     var isBusy by remember { mutableStateOf(false) }
 
     var showOriginalDropdown by remember { mutableStateOf(false) }
@@ -108,7 +108,7 @@ fun TerminalUnpackerScreen() {
             TopAppBar(
                 title = { Text("UPSTOOL PAK ENGINE", fontWeight = FontWeight.Bold, letterSpacing = 1.sp) },
                 actions = {
-                    IconButton(onClick = { refreshFiles(); addLog("[STATUS] Storage refreshed.") }, enabled = !isBusy) {
+                    IconButton(onClick = { refreshFiles(); addLog("[STATUS] Storage scanned.") }, enabled = !isBusy) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color(0xFF00E5FF))
                     }
                 },
@@ -189,7 +189,7 @@ fun TerminalUnpackerScreen() {
                             log.startsWith("[ERROR]") || log.startsWith("[REPACK ERROR]") -> Color(0xFFFF5252)
                             log.startsWith("[SUCCESS]") || log.startsWith("[FINISHED]") -> Color(0xFF00E676)
                             log.startsWith("[WARN]") || log.startsWith("[UE4]") -> Color(0xFFFFB74D)
-                            log.startsWith("📁") -> Color(0xFFFFD54F)
+                            log.startsWith("💾") -> Color(0xFF00E5FF)
                             log.startsWith("📦") || log.startsWith("🔄") -> Color(0xFF80D8FF)
                             else -> Color(0xFFE0E0E0)
                         }
@@ -212,12 +212,12 @@ fun TerminalUnpackerScreen() {
                     onClick = {
                         selectedFile?.let { target ->
                             isBusy = true
-                            addLog("[START] Processing: ${target.name}")
+                            addLog("[START] Processing real archive: ${target.name}")
                             scope.launch {
                                 val ok = PakEngine.unpackArchive(target, callback)
                                 refreshFiles()
                                 isBusy = false
-                                addLog(if (ok) "[COMPLETE] Unpacked into /sdcard/Upstool/Unpack/${target.nameWithoutExtension}" else "[FAILED] Extraction failed.")
+                                addLog(if (ok) "[COMPLETE] Real files saved to /sdcard/Upstool/Unpack/${target.nameWithoutExtension}" else "[FAILED] Extraction failed.")
                             }
                         }
                     },

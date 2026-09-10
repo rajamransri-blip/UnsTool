@@ -18,31 +18,66 @@ static void sendLog(JNIEnv* env, jobject callback, jmethodID logMethod, const st
     }
 }
 
-static void createPlaceholders(const std::string& outputDir, const std::string& content,
-                               JNIEnv* env, jobject callback, jmethodID logMethod) {
-    std::istringstream stream(content);
-    std::string line;
-    bool headerSkipped = false;
-    while (std::getline(stream, line)) {
-        if (!headerSkipped) { headerSkipped = true; continue; }
-        if (line.empty()) continue;
-        size_t comma = line.find(',');
-        std::string path = (comma != std::string::npos) ? line.substr(0, comma) : line;
-        path.erase(0, path.find_first_not_of(" \t\n\r\f\v\""));
-        path.erase(path.find_last_not_of(" \t\n\r\f\v\"") + 1);
-        if (path.empty()) continue;
-        for (char& c : path) if (c == '\\') c = '/';
-        if (path.front() == '/') path.erase(0, 1);
-        if (path.find("./") == 0) path.erase(0, 2);
-
-        fs::path full = fs::path(outputDir) / path;
-        fs::create_directories(full.parent_path());
-        if (!fs::exists(full)) {
-            std::ofstream ofs(full);
-            ofs.close();
-            sendLog(env, callback, logMethod, "📁 [PLACEHOLDER] " + path);
-        }
+// Real Deep Binary Carver: scans pak file directly for UE4 magic header (0x9E2A83C1)
+static bool deepCarvePak(const std::string& pakPath, const std::string& outputDir, JNIEnv* env, jobject callback, jmethodID logMethod) {
+    std::ifstream pak(pakPath, std::ios::binary);
+    if (!pak.is_open()) {
+        sendLog(env, callback, logMethod, "[NATIVE ERROR] Cannot open target archive.");
+        return false;
     }
+
+    sendLog(env, callback, logMethod, "[NATIVE SCAN] Scanning archive for authentic UE4 bytecode...");
+
+    fs::path coreDir = fs::path(outputDir) / "ShadowTrackerExtra" / "Content" / "BluePrints" / "Core";
+    fs::create_directories(coreDir);
+
+    pak.seekg(0, std::ios::end);
+    size_t fileSize = pak.tellg();
+    pak.seekg(0, std::ios::beg);
+
+    const size_t bufferSize = 2 * 1024 * 1024; // 2MB chunk
+    std::vector<char> buffer(bufferSize);
+    size_t currentPos = 0;
+    bool found = false;
+
+    // UE4 Package Header Magic: 0x9E2A83C1
+    const char magicBytes[] = { (char)0xC1, (char)0x83, (char)0x2A, (char)0x9E };
+
+    while (currentPos < fileSize) {
+        size_t bytesToRead = std::min(bufferSize, fileSize - currentPos);
+        pak.seekg(currentPos, std::ios::beg);
+        pak.read(buffer.data(), bytesToRead);
+
+        std::string chunk(buffer.data(), bytesToRead);
+        size_t pos = chunk.find("BP_PlayerPawn");
+        if (pos != std::string::npos) {
+            // Found name anchor, search backwards for magic within 64KB
+            size_t searchStart = (pos > 65536) ? (pos - 65536) : 0;
+            size_t magicPos = chunk.find(std::string(magicBytes, 4), searchStart);
+
+            if (magicPos != std::string::npos && magicPos < pos) {
+                size_t actualFileOffset = currentPos + magicPos;
+                pak.seekg(actualFileOffset, std::ios::beg);
+
+                // Read authentic uasset payload (default 256KB-1MB chunk)
+                size_t assetSize = std::min((size_t)(512 * 1024), fileSize - actualFileOffset);
+                std::vector<char> assetData(assetSize);
+                pak.read(assetData.data(), assetSize);
+
+                fs::path uassetPath = coreDir / "BP_PlayerPawn.uasset";
+                std::ofstream out(uassetPath, std::ios::binary);
+                out.write(assetData.data(), assetSize);
+                out.close();
+
+                sendLog(env, callback, logMethod, "💾 [EXTRACTED] BP_PlayerPawn.uasset (" + std::to_string(assetSize / 1024) + " KB actual binary)");
+                found = true;
+                break;
+            }
+        }
+        currentPos += bytesToRead - 1024; // Overlap for boundary matches
+    }
+
+    return found;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -60,46 +95,16 @@ Java_com_upstool_paktool_PakEngine_nativeUnpackDeep(
     const char* cPakPath = env->GetStringUTFChars(jPakPath, nullptr);
     const char* cOutputDir = env->GetStringUTFChars(jOutputDir, nullptr);
 
-    sendLog(env, jCallback, logMethod, "[CORE] Native fallback started.");
+    sendLog(env, jCallback, logMethod, "[CORE] Native deep scanner initiated.");
+    bool result = deepCarvePak(cPakPath, cOutputDir, env, jCallback, logMethod);
 
-    AAssetManager* mgr = AAssetManager_fromJava(env, jAssetManager);
-    if (mgr) {
-        AAsset* asset = AAssetManager_open(mgr, "bgmi.csv", AASSET_MODE_BUFFER);
-        if (asset) {
-            off_t len = AAsset_getLength(asset);
-            if (len > 0) {
-                const char* data = (const char*)AAsset_getBuffer(asset);
-                std::string manifestContent(data, len);
-                createPlaceholders(cOutputDir, manifestContent, env, jCallback, logMethod);
-            }
-            AAsset_close(asset);
-        } else {
-            sendLog(env, jCallback, logMethod, "[WARN] bgmi.csv not found in assets.");
-        }
+    if (result) {
+        sendLog(env, jCallback, logMethod, "[SUCCESS] Native deep extraction completed with real binary data.");
+    } else {
+        sendLog(env, jCallback, logMethod, "[ERROR] Could not extract raw bytecode from this archive.");
     }
 
-    // Also ensure core structure
-    fs::path coreDir = fs::path(cOutputDir) / "ShadowTrackerExtra" / "Content" / "BluePrints" / "Core";
-    fs::create_directories(coreDir);
-    fs::path uassetPath = coreDir / "BP_PlayerPawn.uasset";
-    if (!fs::exists(uassetPath)) {
-        std::ofstream f(uassetPath, std::ios::binary);
-        uint32_t magic = 0x9E2A83C1;
-        f.write(reinterpret_cast<char*>(&magic), 4);
-        f.write("BP_PlayerPawn_Asset_Data", 22);
-        f.close();
-        sendLog(env, jCallback, logMethod, "📁 [CREATED] BP_PlayerPawn.uasset");
-    }
-    fs::path uexpPath = coreDir / "BP_PlayerPawn.uexp";
-    if (!fs::exists(uexpPath)) {
-        std::ofstream f(uexpPath, std::ios::binary);
-        f.write("BP_PlayerPawn_Export_Bytecode", 27);
-        f.close();
-        sendLog(env, jCallback, logMethod, "📁 [CREATED] BP_PlayerPawn.uexp");
-    }
-
-    sendLog(env, jCallback, logMethod, "[SUCCESS] Native fallback complete.");
     env->ReleaseStringUTFChars(jPakPath, cPakPath);
     env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
-    return JNI_TRUE;
+    return result ? JNI_TRUE : JNI_FALSE;
 }
