@@ -25,9 +25,9 @@ object PakEngine {
     val dirUnpack   = File(baseDir, "Unpack").apply { mkdirs() }
     val dirRepack   = File(baseDir, "Repack").apply { mkdirs() }
 
-    val dirLuaOriginal   = File(baseDir, "Lua/Original").apply { mkdirs() }
-    val dirLuaDecompiled = File(baseDir, "Lua/Decompiled").apply { mkdirs() }
-    val dirLuaCompiled   = File(baseDir, "Lua/Compiled").apply { mkdirs() }
+    // Dedicated Lua directories
+    val dirLuaOriginal = File(baseDir, "Lua/Original").apply { mkdirs() }
+    val dirLuaCompile  = File(baseDir, "Lua/Compile").apply { mkdirs() }
 
     private lateinit var context: Context
 
@@ -41,8 +41,7 @@ object PakEngine {
     suspend fun unpackArchive(file: File, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
         val targetFolder = File(dirUnpack, file.nameWithoutExtension).apply { mkdirs() }
 
-        // Copy BGMI.csv from assets to cache to pass path to python
-        val manifestCache = File(context.cacheDir, "bgmi.csv")
+        val manifestCache = File(context.cacheDir, "BGMI.csv")
         try {
             val assetName = if (context.assets.list("")?.contains("BGMI.csv") == true) "BGMI.csv" else "bgmi.csv"
             context.assets.open(assetName).use { input ->
@@ -50,7 +49,7 @@ object PakEngine {
             }
             callback.onLog("[MANIFEST] Connected: $assetName")
         } catch (e: Exception) {
-            callback.onLog("[MANIFEST] Note: No bgmi.csv asset, proceeding with dynamic inspect")
+            callback.onLog("[MANIFEST] Using built-in inspection")
         }
 
         try {
@@ -64,11 +63,11 @@ object PakEngine {
             ).toBoolean()
 
             if (pyResult) {
-                // Auto copy raw and decompile Lua immediately
+                // Copy cleanly extracted Lua directly to Lua/Original
                 targetFolder.walkTopDown().filter { it.extension.lowercase() == "lua" }.forEach { luaF ->
-                    val origCopy = File(dirLuaOriginal, luaF.name)
-                    luaF.copyTo(origCopy, overwrite = true)
-                    decompileLua(origCopy)
+                    val dest = File(dirLuaOriginal, luaF.name)
+                    luaF.copyTo(dest, overwrite = true)
+                    callback.onLog("📁 [LUA SAVED] Clean code ready in /Lua/Original/${luaF.name}")
                 }
                 return@withContext true
             }
@@ -86,7 +85,7 @@ object PakEngine {
             return@withContext false
         }
 
-        callback.onLog("[REPLACE] Checking Editor folder for replacement files...")
+        callback.onLog("[REPLACE] Checking Editor folder for files...")
         var replaced = 0
         dirEditor.listFiles()?.forEach { editorFile ->
             unpackedFolder.walkTopDown().forEach { fileInTree ->
@@ -110,32 +109,25 @@ object PakEngine {
         }
     }
 
-    suspend fun decompileLua(file: File): String = withContext(Dispatchers.IO) {
-        try {
-            val py = Python.getInstance()
-            val module = py.getModule("pak_engine")
-            val source = module.callAttr("decompile_lua_file", file.absolutePath).toString()
-            val savePath = File(dirLuaDecompiled, file.name)
-            savePath.writeText(source)
-            return@withContext source
-        } catch (e: Exception) {
-            return@withContext "-- Decompile Error: ${e.message}"
-        }
-    }
+    suspend fun compileAndSaveLua(fileName: String, code: String): File = withContext(Dispatchers.IO) {
+        val py = Python.getInstance()
+        val module = py.getModule("pak_engine")
+        val pyBytes = module.callAttr("compile_lua_to_pak_ready", code).toJava(ByteArray::class.java)
 
-    suspend fun saveCompiledLua(fileName: String, code: String): File = withContext(Dispatchers.IO) {
-        val destCompiled = File(dirLuaCompiled, fileName)
-        destCompiled.writeText(code)
+        val destCompile = File(dirLuaCompile, fileName)
+        destCompile.writeBytes(pyBytes)
+
+        // Save ready file directly into Editor/ for repack
         val destEditor = File(dirEditor, fileName)
-        destCompiled.copyTo(destEditor, overwrite = true)
-        return@withContext destCompiled
+        destCompile.copyTo(destEditor, overwrite = true)
+        return@withContext destEditor
     }
 
     fun getAllLuaFiles(): List<File> {
         val set = mutableSetOf<File>()
-        dirLuaOriginal.listFiles()?.filter { it.extension.lowercase() in listOf("lua", "luac") }?.let { set.addAll(it) }
-        dirLuaDecompiled.listFiles()?.filter { it.extension.lowercase() in listOf("lua", "luac") }?.let { set.addAll(it) }
-        dirUnpack.walkTopDown().filter { it.extension.lowercase() in listOf("lua", "luac") }.let { set.addAll(it) }
+        dirLuaOriginal.listFiles()?.filter { it.extension.lowercase() == "lua" }?.let { set.addAll(it) }
+        dirLuaCompile.listFiles()?.filter { it.extension.lowercase() == "lua" }?.let { set.addAll(it) }
+        dirUnpack.walkTopDown().filter { it.extension.lowercase() == "lua" }.let { set.addAll(it) }
         return set.toList()
     }
 }

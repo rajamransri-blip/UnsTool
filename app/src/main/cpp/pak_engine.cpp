@@ -47,7 +47,7 @@ static bool deepCarvePak(const std::string& pakPath, const std::string& outputDi
         return false;
     }
 
-    sendLog(env, callback, logMethod, "[NATIVE SCAN] Stream inspecting archive chunks...");
+    sendLog(env, callback, logMethod, "[NATIVE SCAN] Stream inspecting chunks...");
 
     fs::path coreDir = fs::path(outputDir) / "ShadowTrackerExtra" / "Content" / "BluePrints" / "Core";
     fs::create_directories(coreDir);

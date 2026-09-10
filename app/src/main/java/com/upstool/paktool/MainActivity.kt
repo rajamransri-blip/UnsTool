@@ -35,7 +35,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import java.io.File
 
-enum class Screen { DASHBOARD, UNPACK, REPACK, LUA_DECOMPILE, LUA_COMPILE, HEX_EDITOR }
+enum class Screen { DASHBOARD, UNPACK, REPACK, LUA_COMPILE, HEX_EDITOR }
 
 data class SearchOccurrence(val offset: Int, val originalBytes: ByteArray, val previewText: String)
 
@@ -61,7 +61,6 @@ fun MainApp() {
         Screen.DASHBOARD -> DashboardScreen(onNavigate = { currentScreen = it })
         Screen.UNPACK -> UnpackScreen(onBack = { currentScreen = Screen.DASHBOARD })
         Screen.REPACK -> RepackScreen(onBack = { currentScreen = Screen.DASHBOARD })
-        Screen.LUA_DECOMPILE -> LuaDecompileScreen(onBack = { currentScreen = Screen.DASHBOARD })
         Screen.LUA_COMPILE -> LuaCompileScreen(onBack = { currentScreen = Screen.DASHBOARD })
         Screen.HEX_EDITOR -> SmartHexEditorScreen(onBack = { currentScreen = Screen.DASHBOARD })
     }
@@ -84,6 +83,7 @@ fun DashboardScreen(onNavigate: (Screen) -> Unit) {
             .verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // Top Title Card
         Card(
             shape = RoundedCornerShape(12.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A1A)),
@@ -122,10 +122,10 @@ fun DashboardScreen(onNavigate: (Screen) -> Unit) {
             }
         }
 
-        ToolCard("PAK Unpack", "PAK -> files (.uasset, .uexp, .lua)", Icons.Default.ArrowDownward) { onNavigate(Screen.UNPACK) }
+        // 4 Core Action Cards
+        ToolCard("PAK Unpack", "PAK -> files (.uasset, .uexp, clean .lua)", Icons.Default.ArrowDownward) { onNavigate(Screen.UNPACK) }
         ToolCard("PAK Repack", "EDITTED -> PAK", Icons.Default.ArrowUpward) { onNavigate(Screen.REPACK) }
-        ToolCard("LUA Decompile", "bytecode -> clean readable Lua", Icons.Default.Code) { onNavigate(Screen.LUA_DECOMPILE) }
-        ToolCard("LUA Compile", "Select script -> /Compiled & /Editor", Icons.Default.Terminal) { onNavigate(Screen.LUA_COMPILE) }
+        ToolCard("LUA Compile", "Choose edited Lua -> compile into /Editor", Icons.Default.Terminal) { onNavigate(Screen.LUA_COMPILE) }
         ToolCard("Hex Editor (.uasset / .uexp)", "Smart Offset Inspector & Patcher", Icons.Default.Build) { onNavigate(Screen.HEX_EDITOR) }
 
         Spacer(modifier = Modifier.height(20.dp))
@@ -161,7 +161,7 @@ fun UnpackScreen(onBack: () -> Unit) {
     var files by remember { mutableStateOf(PakEngine.dirOriginal.listFiles()?.filter { it.extension in listOf("pak", "obb") || it.name.contains("patch") } ?: emptyList()) }
     var selected by remember { mutableStateOf(files.firstOrNull()) }
     var showPicker by remember { mutableStateOf(false) }
-    var logs by remember { mutableStateOf(listOf("[SYSTEM] Unpack Engine with BGMI.csv Ready.")) }
+    var logs by remember { mutableStateOf(listOf("[SYSTEM] PAK Unpack Engine Ready with BGMI.csv")) }
     var isBusy by remember { mutableStateOf(false) }
 
     val callback = remember { object : TerminalCallback { override fun onLog(line: String) { scope.launch { logs = logs + line } } } }
@@ -179,7 +179,7 @@ fun UnpackScreen(onBack: () -> Unit) {
         }
         Box(modifier = Modifier.weight(1f).fillMaxWidth().background(Color(0xFF0A0A0A), RoundedCornerShape(8.dp)).padding(10.dp)) {
             LazyColumn(state = listState) {
-                items(logs) { log -> Text(log, color = if (log.startsWith("[COMPLETE]") || log.startsWith("💾")) Color(0xFF00E676) else Color.White, fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
+                items(logs) { log -> Text(log, color = if (log.startsWith("[COMPLETE]") || log.startsWith("💾") || log.startsWith("📁")) Color(0xFF00E676) else Color.White, fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
             }
         }
         Button(
@@ -192,7 +192,7 @@ fun UnpackScreen(onBack: () -> Unit) {
             enabled = !isBusy && selected != null,
             modifier = Modifier.fillMaxWidth().height(48.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676))
-        ) { Text(if (isBusy) "INSPECTING & UNPACKING..." else "INSPECT & START UNPACK", color = Color.Black, fontWeight = FontWeight.Bold) }
+        ) { Text(if (isBusy) "UNPACKING REAL ASSETS & CLEAN LUA..." else "START UNPACK", color = Color.Black, fontWeight = FontWeight.Bold) }
     }
     if (showPicker) {
         AlertDialog(
@@ -255,85 +255,6 @@ fun RepackScreen(onBack: () -> Unit) {
 }
 
 @Composable
-fun LuaDecompileScreen(onBack: () -> Unit) {
-    val scope = rememberCoroutineScope()
-    var luaFiles by remember { mutableStateOf(PakEngine.getAllLuaFiles()) }
-    var selectedFile by remember { mutableStateOf(luaFiles.firstOrNull()) }
-    var showPicker by remember { mutableStateOf(false) }
-    var decompiledCode by remember { mutableStateOf("-- Select Lua File & Tap Decompile") }
-    var status by remember { mutableStateOf("") }
-    var isDecompiling by remember { mutableStateOf(false) }
-
-    Column(modifier = Modifier.fillMaxSize().imePadding().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = null, tint = Color.White) }
-            Text("LUA DECOMPILE", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-        }
-
-        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))) {
-            Row(modifier = Modifier.fillMaxWidth().clickable {
-                luaFiles = PakEngine.getAllLuaFiles()
-                showPicker = true
-            }.padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(selectedFile?.name ?: "No Lua found in storage", color = Color(0xFF00E676), fontFamily = FontFamily.Monospace)
-                Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Color.White)
-            }
-        }
-
-        OutlinedTextField(
-            value = decompiledCode,
-            onValueChange = { decompiledCode = it },
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Color.White)
-        )
-
-        if (status.isNotEmpty()) {
-            Text(status, color = Color(0xFF00E676), fontSize = 12.sp)
-        }
-
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(
-                onClick = {
-                    selectedFile?.let { file ->
-                        isDecompiling = true
-                        scope.launch {
-                            decompiledCode = PakEngine.decompileLua(file)
-                            status = "Saved Clean: /sdcard/Upstool/Lua/Decompiled/${file.name}"
-                            isDecompiling = false
-                        }
-                    }
-                },
-                enabled = !isDecompiling && selectedFile != null,
-                modifier = Modifier.weight(1f).height(46.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676))
-            ) { Text(if (isDecompiling) "DECOMPILING..." else "DECOMPILE", color = Color.Black, fontWeight = FontWeight.Bold) }
-
-            Button(
-                onClick = {
-                    selectedFile?.let { file ->
-                        scope.launch {
-                            PakEngine.saveCompiledLua(file.name, decompiledCode)
-                            status = "Saved to /Editor & /Lua/Compiled!"
-                        }
-                    }
-                },
-                modifier = Modifier.weight(1f).height(46.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0288D1))
-            ) { Text("SAVE TO /EDITOR", fontWeight = FontWeight.Bold) }
-        }
-    }
-
-    if (showPicker) {
-        AlertDialog(
-            onDismissRequest = { showPicker = false },
-            title = { Text("Choose Lua File to Decompile") },
-            text = { LazyColumn { items(luaFiles) { f -> Text(f.name, modifier = Modifier.fillMaxWidth().clickable { selectedFile = f; showPicker = false }.padding(10.dp)) } } },
-            confirmButton = {}
-        )
-    }
-}
-
-@Composable
 fun LuaCompileScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var luaFiles by remember { mutableStateOf(PakEngine.getAllLuaFiles()) }
@@ -341,10 +262,15 @@ fun LuaCompileScreen(onBack: () -> Unit) {
     var showPicker by remember { mutableStateOf(false) }
 
     var scriptName by remember { mutableStateOf("BRPlayerCharacterBase.lua") }
-    var luaSource by remember {
-        mutableStateOf("-- BRPlayerCharacterBase.lua Script\nlocal BRPlayerCharacterBase = {}\n\nfunction BRPlayerCharacterBase:InitCharacterBase()\n    print('Character Base Configured')\nend\n\nreturn BRPlayerCharacterBase")
-    }
+    var luaSource by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
+
+    LaunchedEffect(selectedFile) {
+        selectedFile?.let {
+            scriptName = it.name
+            luaSource = it.readText()
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize().imePadding().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -383,33 +309,24 @@ fun LuaCompileScreen(onBack: () -> Unit) {
         Button(
             onClick = {
                 scope.launch {
-                    PakEngine.saveCompiledLua(scriptName, luaSource)
-                    status = "Saved to /sdcard/Upstool/Lua/Compiled & copied to /Editor!"
+                    PakEngine.compileAndSaveLua(scriptName, luaSource)
+                    status = "Saved to /Lua/Compile/ & copied to /Editor/$scriptName (Ready to Repack!)"
                 }
             },
             modifier = Modifier.fillMaxWidth().height(48.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676))
-        ) { Text("SAVE TO /COMPILED & /EDITOR", color = Color.Black, fontWeight = FontWeight.Bold) }
+        ) { Text("COMPILE & PUSH TO /EDITOR", color = Color.Black, fontWeight = FontWeight.Bold) }
     }
 
     if (showPicker) {
         AlertDialog(
             onDismissRequest = { showPicker = false },
-            title = { Text("Select Script to Edit & Compile") },
+            title = { Text("Select Script from Storage") },
             text = {
                 LazyColumn {
                     items(luaFiles) { f ->
                         Text(f.name, modifier = Modifier.fillMaxWidth().clickable {
                             selectedFile = f
-                            scriptName = f.name
-                            scope.launch {
-                                try {
-                                    val content = f.readText()
-                                    luaSource = if (content.contains("function") || content.contains("local")) content else PakEngine.decompileLua(f)
-                                } catch (e: Exception) {
-                                    luaSource = PakEngine.decompileLua(f)
-                                }
-                            }
                             showPicker = false
                         }.padding(10.dp))
                     }
