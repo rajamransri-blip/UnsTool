@@ -239,7 +239,7 @@ jobs:
           target_link_libraries(upstool_native ${log-lib} ${android-lib} z)
           EOF
 
-          # ========== pak_engine.cpp (Native fallback with bgmi.csv) ==========
+          # ========== pak_engine.cpp (Fixed Variable Typo) ==========
           cat << 'EOF' > app/src/main/cpp/pak_engine.cpp
           #include <jni.h>
           #include <string>
@@ -334,7 +334,7 @@ jobs:
                   sendLog(env, jCallback, logMethod, "📁 [CREATED] BP_PlayerPawn.uasset");
               }
               fs::path uexpPath = coreDir / "BP_PlayerPawn.uexp";
-              if (!fs::exists(ueexpPath)) {
+              if (!fs::exists(uexpPath)) {
                   std::ofstream f(uexpPath, std::ios::binary);
                   f.write("BP_PlayerPawn_Export_Bytecode", 27);
                   f.close();
@@ -348,7 +348,7 @@ jobs:
           }
           EOF
 
-          # ========== pak_engine.py (Python unpacker with bgmi.csv) ==========
+          # ========== pak_engine.py ==========
           cat << 'EOF' > app/src/main/python/pak_engine.py
           import os, sys, zlib, struct, shutil, csv
           from pathlib import Path
@@ -371,7 +371,7 @@ jobs:
               paths = set()
               with open(csv_path, 'r', encoding='utf-8') as f:
                   reader = csv.reader(f)
-                  next(reader, None)  # skip header
+                  next(reader, None)
                   for row in reader:
                       if not row: continue
                       raw = row[0].strip()
@@ -991,7 +991,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No new changes to commit."
           else
-            git commit -m "Add bgmi.csv manifest and complete build setup [skip ci]"
+            git commit -m "Fix uexpPath typo in native engine [skip ci]"
             git push origin HEAD:${{ github.ref_name }}
           fi
 
