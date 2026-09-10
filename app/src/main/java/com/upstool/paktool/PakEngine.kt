@@ -36,32 +36,14 @@ object PakEngine {
 
     suspend fun unpackArchive(file: File, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
         val targetFolder = File(dirUnpack, file.nameWithoutExtension).apply { mkdirs() }
-
-        val manifestFile = File(context.cacheDir, "bgmi.csv")
-        try {
-            context.assets.open("bgmi.csv").use { input ->
-                manifestFile.outputStream().use { output ->
-                    input.copyTo(output)
-                }
-            }
-        } catch (e: Exception) {
-            callback.onLog("[WARN] Manifest load error: ${e.message}")
-        }
-
         try {
             val py = Python.getInstance()
             val module = py.getModule("pak_engine")
-            val pyResult = module.callAttr("unpack_pak",
-                file.absolutePath,
-                targetFolder.absolutePath,
-                callback,
-                manifestFile.absolutePath
-            ).toBoolean()
+            val pyResult = module.callAttr("unpack_pak", file.absolutePath, targetFolder.absolutePath, callback).toBoolean()
             if (pyResult) return@withContext true
         } catch (e: Exception) {
-            callback.onLog("[PY] Switching to native chunk splitter: ${e.message}")
+            callback.onLog("[PY ERROR] ${e.message}")
         }
-
         nativeUnpackDeep(file.absolutePath, targetFolder.absolutePath, callback, context.assets)
     }
 
@@ -72,7 +54,7 @@ object PakEngine {
             return@withContext false
         }
 
-        callback.onLog("[REPLACE] Scanning Editor folder for replacement assets...")
+        callback.onLog("[REPLACE] Checking Editor folder for files...")
         var replaced = 0
         dirEditor.listFiles()?.forEach { editorFile ->
             unpackedFolder.walkTopDown().forEach { fileInTree ->
@@ -83,7 +65,7 @@ object PakEngine {
                 }
             }
         }
-        callback.onLog("[INFO] $replaced assets replaced with original edited versions.")
+        callback.onLog("[INFO] $replaced modified files placed.")
 
         val outputPak = File(dirRepack, "$folderName.pak")
         try {
@@ -94,5 +76,21 @@ object PakEngine {
             callback.onLog("[REPACK ERROR] ${e.message}")
             return@withContext false
         }
+    }
+
+    suspend fun decompileLua(file: File): String = withContext(Dispatchers.IO) {
+        try {
+            val py = Python.getInstance()
+            val module = py.getModule("pak_engine")
+            return@withContext module.callAttr("decompile_lua_file", file.absolutePath).toString()
+        } catch (e: Exception) {
+            return@withContext "-- Error: ${e.message}"
+        }
+    }
+
+    suspend fun saveCompiledLua(fileName: String, code: String): File = withContext(Dispatchers.IO) {
+        val dest = File(dirEditor, fileName)
+        dest.writeText(code)
+        return@withContext dest
     }
 }
