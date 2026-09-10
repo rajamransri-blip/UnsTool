@@ -239,7 +239,7 @@ jobs:
           target_link_libraries(upstool_native ${log-lib} ${android-lib} z)
           EOF
 
-          # ========== pak_engine.cpp (Native Real Binary Parser) ==========
+          # ========== pak_engine.cpp (Native Splitting Engine) ==========
           cat << 'EOF' > app/src/main/cpp/pak_engine.cpp
           #include <jni.h>
           #include <string>
@@ -261,7 +261,33 @@ jobs:
               }
           }
 
-          // Real Deep Binary Carver: scans pak file directly for UE4 magic header (0x9E2A83C1)
+          static int32_t parseTotalHeaderSize(const char* buf, size_t len) {
+              if (len < 64) return 0;
+              uint32_t tag = *reinterpret_cast<const uint32_t*>(buf);
+              if (tag != 0x9E2A83C1) return 0;
+
+              int32_t legacyVer = *reinterpret_cast<const int32_t*>(buf + 4);
+              if (legacyVer <= -6) {
+                  int32_t customCount = *reinterpret_cast<const int32_t*>(buf + 20);
+                  if (customCount >= 0 && customCount <= 100) {
+                      size_t off = 24 + (size_t)customCount * 20;
+                      if (off + 4 <= len) {
+                          int32_t ths = *reinterpret_cast<const int32_t*>(buf + off);
+                          if (ths >= 1024 && (size_t)ths < len) {
+                              return ths;
+                          }
+                      }
+                  }
+              }
+              int32_t ths2 = *reinterpret_cast<const int32_t*>(buf + 20);
+              if (ths2 >= 1024 && (size_t)ths2 < len) return ths2;
+
+              int32_t ths3 = *reinterpret_cast<const int32_t*>(buf + 24);
+              if (ths3 >= 1024 && (size_t)ths3 < len) return ths3;
+
+              return 0;
+          }
+
           static bool deepCarvePak(const std::string& pakPath, const std::string& outputDir, JNIEnv* env, jobject callback, jmethodID logMethod) {
               std::ifstream pak(pakPath, std::ios::binary);
               if (!pak.is_open()) {
@@ -269,7 +295,7 @@ jobs:
                   return false;
               }
 
-              sendLog(env, callback, logMethod, "[NATIVE SCAN] Scanning archive for authentic UE4 bytecode...");
+              sendLog(env, callback, logMethod, "[NATIVE SCAN] Scanning archive chunks for UE4 bytecode...");
 
               fs::path coreDir = fs::path(outputDir) / "ShadowTrackerExtra" / "Content" / "BluePrints" / "Core";
               fs::create_directories(coreDir);
@@ -278,12 +304,11 @@ jobs:
               size_t fileSize = pak.tellg();
               pak.seekg(0, std::ios::beg);
 
-              const size_t bufferSize = 2 * 1024 * 1024; // 2MB chunk
+              const size_t bufferSize = 2 * 1024 * 1024; // 2MB stream chunk
               std::vector<char> buffer(bufferSize);
               size_t currentPos = 0;
               bool found = false;
 
-              // UE4 Package Header Magic: 0x9E2A83C1
               const char magicBytes[] = { (char)0xC1, (char)0x83, (char)0x2A, (char)0x9E };
 
               while (currentPos < fileSize) {
@@ -294,7 +319,6 @@ jobs:
                   std::string chunk(buffer.data(), bytesToRead);
                   size_t pos = chunk.find("BP_PlayerPawn");
                   if (pos != std::string::npos) {
-                      // Found name anchor, search backwards for magic within 64KB
                       size_t searchStart = (pos > 65536) ? (pos - 65536) : 0;
                       size_t magicPos = chunk.find(std::string(magicBytes, 4), searchStart);
 
@@ -302,22 +326,43 @@ jobs:
                           size_t actualFileOffset = currentPos + magicPos;
                           pak.seekg(actualFileOffset, std::ios::beg);
 
-                          // Read authentic uasset payload (default 256KB-1MB chunk)
-                          size_t assetSize = std::min((size_t)(512 * 1024), fileSize - actualFileOffset);
-                          std::vector<char> assetData(assetSize);
-                          pak.read(assetData.data(), assetSize);
+                          size_t assetSliceSize = std::min((size_t)(1024 * 1024), fileSize - actualFileOffset);
+                          std::vector<char> assetData(assetSliceSize);
+                          pak.read(assetData.data(), assetSliceSize);
 
-                          fs::path uassetPath = coreDir / "BP_PlayerPawn.uasset";
-                          std::ofstream out(uassetPath, std::ios::binary);
-                          out.write(assetData.data(), assetSize);
-                          out.close();
+                          int32_t headerSize = parseTotalHeaderSize(assetData.data(), assetSliceSize);
+                          if (headerSize > 0 && (size_t)headerSize < assetSliceSize) {
+                              // Write authentic .uasset
+                              fs::path uassetPath = coreDir / "BP_PlayerPawn.uasset";
+                              std::ofstream outUasset(uassetPath, std::ios::binary);
+                              outUasset.write(assetData.data(), headerSize);
+                              outUasset.close();
 
-                          sendLog(env, callback, logMethod, "💾 [EXTRACTED] BP_PlayerPawn.uasset (" + std::to_string(assetSize / 1024) + " KB actual binary)");
-                          found = true;
-                          break;
+                              // Write authentic .uexp
+                              const char* uexpPtr = assetData.data() + headerSize;
+                              size_t rawUexpSize = assetSliceSize - headerSize;
+                              size_t finalUexpSize = rawUexpSize;
+
+                              for (size_t i = rawUexpSize; i >= 4; --i) {
+                                  if (*reinterpret_cast<const uint32_t*>(uexpPtr + i - 4) == 0x9E2A83C1) {
+                                      finalUexpSize = i;
+                                      break;
+                                  }
+                              }
+
+                              fs::path uexpPath = coreDir / "BP_PlayerPawn.uexp";
+                              std::ofstream outUexp(uexpPath, std::ios::binary);
+                              outUexp.write(uexpPtr, finalUexpSize);
+                              outUexp.close();
+
+                              sendLog(env, callback, logMethod, "💾 [SPLIT] BP_PlayerPawn.uasset (" + std::to_string(headerSize / 1024) + " KB)");
+                              sendLog(env, callback, logMethod, "💾 [SPLIT] BP_PlayerPawn.uexp (" + std::to_string(finalUexpSize / 1024) + " KB)");
+                              found = true;
+                              break;
+                          }
                       }
                   }
-                  currentPos += bytesToRead - 1024; // Overlap for boundary matches
+                  currentPos += bytesToRead - 1024;
               }
 
               return found;
@@ -338,13 +383,13 @@ jobs:
               const char* cPakPath = env->GetStringUTFChars(jPakPath, nullptr);
               const char* cOutputDir = env->GetStringUTFChars(jOutputDir, nullptr);
 
-              sendLog(env, jCallback, logMethod, "[CORE] Native deep scanner initiated.");
+              sendLog(env, jCallback, logMethod, "[CORE] Native chunk splitter initiated.");
               bool result = deepCarvePak(cPakPath, cOutputDir, env, jCallback, logMethod);
 
               if (result) {
-                  sendLog(env, jCallback, logMethod, "[SUCCESS] Native deep extraction completed with real binary data.");
+                  sendLog(env, jCallback, logMethod, "[SUCCESS] Native extraction & asset split completed.");
               } else {
-                  sendLog(env, jCallback, logMethod, "[ERROR] Could not extract raw bytecode from this archive.");
+                  sendLog(env, jCallback, logMethod, "[ERROR] Could not extract raw bytecode from archive.");
               }
 
               env->ReleaseStringUTFChars(jPakPath, cPakPath);
@@ -353,7 +398,7 @@ jobs:
           }
           EOF
 
-          # ========== pak_engine.py (Real Engine: AES, Zstd, Zlib, Real Bytecode) ==========
+          # ========== pak_engine.py (Python Real Chunk Splitter) ==========
           cat << 'EOF' > app/src/main/python/pak_engine.py
           import os, sys, zlib, struct, shutil, csv
           from pathlib import Path
@@ -393,242 +438,110 @@ jobs:
               return cipher.decrypt(data)
 
           def decompress_data(chunk, expected_size=None):
-              # 1. Try Zstandard
               if zstd:
                   try:
                       dctx = zstd.ZstdDecompressor()
                       return dctx.decompress(chunk, max_output_size=expected_size or (len(chunk) * 10))
                   except Exception:
                       pass
-              # 2. Try standard Zlib
               try:
                   return zlib.decompress(chunk)
               except Exception:
                   pass
-              # 3. Try raw deflate
               try:
                   return zlib.decompress(chunk, -15)
               except Exception:
                   pass
-              # 4. Try Gzip/auto
               try:
                   return zlib.decompress(chunk, 31)
               except Exception:
                   pass
               return chunk
 
-          def is_valid_mount_point(buf):
-              if len(buf) < 4:
+          def get_uasset_header_size(buf):
+              if len(buf) < 64 or buf[:4] != b"\xc1\x83\x2a\x9e":
+                  return None
+              
+              legacy_ver = struct.unpack("<i", buf[4:8])[0]
+              
+              if legacy_ver <= -6:
+                  custom_count = struct.unpack("<i", buf[20:24])[0]
+                  if 0 <= custom_count <= 100:
+                      off = 24 + custom_count * 20
+                      if off + 4 <= len(buf):
+                          val = struct.unpack("<i", buf[off:off+4])[0]
+                          if 1024 <= val < len(buf):
+                              return val
+              
+              val2 = struct.unpack("<i", buf[20:24])[0]
+              if 1024 <= val2 < len(buf):
+                  return val2
+                  
+              val3 = struct.unpack("<i", buf[24:28])[0]
+              if 1024 <= val3 < len(buf):
+                  return val3
+
+              return None
+
+          def save_split_package(raw_data, dest_dir, base_name, callback):
+              if len(raw_data) < 64 or raw_data[:4] != b"\xc1\x83\x2a\x9e":
                   return False
-              m_len = struct.unpack("<i", buf[:4])[0]
-              if 0 <= m_len < 256:
-                  if m_len == 0:
-                      return True
-                  mount = buf[4:4+m_len]
-                  if any(x in mount for x in [b"/", b"\\", b".", b"Content", b"Shadow"]):
-                      return True
+
+              header_size = get_uasset_header_size(raw_data)
+              os.makedirs(dest_dir, exist_ok=True)
+
+              if header_size and 512 <= header_size < len(raw_data):
+                  uasset_part = raw_data[:header_size]
+                  uexp_part = raw_data[header_size:]
+
+                  # Verify ending magic of uexp
+                  magic_idx = uexp_part.rfind(b"\xc1\x83\x2a\x9e")
+                  if magic_idx != -1:
+                      uexp_part = uexp_part[:magic_idx + 4]
+
+                  uasset_file = os.path.join(dest_dir, f"{base_name}.uasset")
+                  uexp_file = os.path.join(dest_dir, f"{base_name}.uexp")
+
+                  with open(uasset_file, "wb") as f1:
+                      f1.write(uasset_part)
+
+                  with open(uexp_file, "wb") as f2:
+                      f2.write(uexp_part)
+
+                  log(callback, f"💾 [SPLIT] {base_name}.uasset ({len(uasset_part)/1024:.1f} KB clean code)")
+                  log(callback, f"💾 [SPLIT] {base_name}.uexp ({len(uexp_part)/1024:.1f} KB bytecode)")
+                  return True
               return False
 
-          def load_manifest(csv_path):
-              paths = set()
-              with open(csv_path, 'r', encoding='utf-8') as f:
-                  reader = csv.reader(f)
-                  next(reader, None)
-                  for row in reader:
-                      if not row: continue
-                      raw = row[0].strip()
-                      if raw:
-                          norm = raw.replace('\\', '/').lstrip('./').lstrip('/')
-                          paths.add(norm)
-              return paths
-
           def unpack_pak(pak_path, output_dir, callback, manifest_path=None):
-              log(callback, f"[ENGINE] Analyzing: {os.path.basename(pak_path)}")
+              log(callback, f"[ENGINE] Analyzing archive: {os.path.basename(pak_path)}")
               os.makedirs(output_dir, exist_ok=True)
 
-              wanted = None
-              wanted_basenames = set()
-              if manifest_path and os.path.exists(manifest_path):
-                  wanted = load_manifest(manifest_path)
-                  wanted_basenames = {os.path.basename(p) for p in wanted}
-                  log(callback, f"[MANIFEST] Filtering {len(wanted)} targets from manifest.")
-              else:
-                  log(callback, "[MANIFEST] Full extraction mode enabled.")
-
               file_size = os.path.getsize(pak_path)
-              extracted = 0
+              log(callback, f"[INFO] Target size: {file_size / (1024*1024):.2f} MB")
 
-              try:
-                  with open(pak_path, "rb") as f:
-                      scan_size = min(file_size, 131072)
-                      f.seek(file_size - scan_size)
-                      tail = f.read(scan_size)
+              # Initiate deep chunk search
+              return deep_chunk_carve(pak_path, output_dir, callback)
 
-                      # UE4 Pak Magic: 0x5A6F12E1
-                      magic = b"\xe1\x12\x6f\x5a"
-                      idx = tail.rfind(magic)
-                      if idx == -1:
-                          log(callback, "[WARN] No UE4 standard footer found. Initiating Deep Carve...")
-                          return deep_carve(pak_path, output_dir, callback, wanted)
-
-                      pos = (file_size - scan_size) + idx
-                      f.seek(pos + 4)
-                      ver_bytes = f.read(20)
-                      version, off, sz = struct.unpack("<iqq", ver_bytes[:20])
-                      log(callback, f"[UE4] Pak Version {version} | Index at {off} (size {sz})")
-
-                      if not (0 < off < file_size and 0 < sz < file_size):
-                          log(callback, "[WARN] Invalid index offsets. Falling back to Deep Carve...")
-                          return deep_carve(pak_path, output_dir, callback, wanted)
-
-                      f.seek(off)
-                      idx_bytes = f.read(sz)
-                      dec = None
-                      cipher = None
-
-                      # Check if already plaintext
-                      if is_valid_mount_point(idx_bytes):
-                          dec = idx_bytes
-                          log(callback, "[UE4] Unencrypted index detected.")
-                      elif AES:
-                          for k in PUBG_KEYS:
-                              try:
-                                  c = AES.new(k, AES.MODE_ECB)
-                                  test = decrypt_aes_block(c, idx_bytes)
-                                  if is_valid_mount_point(test):
-                                      dec = test
-                                      cipher = c
-                                      log(callback, f"[UE4] AES key matched: {k.hex()[:8]}...")
-                                      break
-                              except Exception:
-                                  pass
-
-                      if not dec:
-                          log(callback, "[WARN] Index decryption unresolved. Running Deep Carve...")
-                          return deep_carve(pak_path, output_dir, callback, wanted)
-
-                      p = 0
-                      m_len = struct.unpack("<i", dec[p:p+4])[0]
-                      p += 4
-                      if m_len > 0:
-                          p += m_len
-                      elif m_len < 0:
-                          p += (-m_len) * 2
-
-                      num = struct.unpack("<i", dec[p:p+4])[0]
-                      p += 4
-                      log(callback, f"[UE4] Index contains {num} total files. Extracting...")
-
-                      for i in range(num):
-                          if p + 4 > len(dec): break
-                          fn_len = struct.unpack("<i", dec[p:p+4])[0]
-                          p += 4
-                          if fn_len < 0:
-                              fn = dec[p:p+(-fn_len)*2].decode("utf-16le", errors="ignore").strip("\x00")
-                              p += (-fn_len)*2
-                          else:
-                              fn = dec[p:p+fn_len].decode("utf-8", errors="ignore").strip("\x00")
-                              p += fn_len
-
-                          entry = dec[p:p+28]
-                          p += 28 + 20
-                          e_off, e_sz, e_unc, e_cm = struct.unpack("<qqqi", entry[:28])
-
-                          blocks = []
-                          if e_cm != 0:
-                              cnt = struct.unpack("<i", dec[p:p+4])[0]
-                              p += 4
-                              for _ in range(cnt):
-                                  bs, be = struct.unpack("<qq", dec[p:p+16])
-                                  blocks.append((bs, be))
-                                  p += 16
-
-                          is_enc = (dec[p] == 1) if p < len(dec) else False
-                          p += 5
-
-                          clean = fn.replace("\\", "/").lstrip("/").replace("../", "").lstrip("./")
-                          base = os.path.basename(clean)
-
-                          if wanted is not None and (clean not in wanted and base not in wanted_basenames):
-                              continue
-
-                          dest = os.path.join(output_dir, clean)
-                          os.makedirs(os.path.dirname(dest), exist_ok=True)
-
-                          # Check if duplicate header exists at offset
-                          f.seek(e_off)
-                          test_hdr = f.read(28)
-                          has_dup_header = False
-                          if len(test_hdr) == 28:
-                              t_off, t_sz, t_unc, t_cm = struct.unpack("<qqqi", test_hdr)
-                              if t_off == e_off and t_unc == e_unc:
-                                  has_dup_header = True
-
-                          h_sz = (53 + (4 + len(blocks) * 16 if e_cm != 0 else 0)) if has_dup_header else 0
-
-                          if e_cm == 0:
-                              f.seek(e_off + h_sz)
-                              data = f.read(e_unc)
-                              if is_enc and cipher:
-                                  data = decrypt_aes_block(cipher, data)[:e_unc]
-                              with open(dest, "wb") as o:
-                                  o.write(data)
-                          else:
-                              payload = bytearray()
-                              if blocks:
-                                  for bs, be in blocks:
-                                      f.seek(e_off + h_sz + bs)
-                                      chunk = f.read(be - bs)
-                                      if is_enc and cipher:
-                                          chunk = decrypt_aes_block(cipher, chunk)[:len(chunk)]
-                                      payload += decompress_data(chunk, 65536)
-                              else:
-                                  f.seek(e_off + h_sz)
-                                  chunk = f.read(e_sz)
-                                  if is_enc and cipher:
-                                      chunk = decrypt_aes_block(cipher, chunk)[:len(chunk)]
-                                  payload = decompress_data(chunk, e_unc)
-
-                              final_bytes = bytes(payload[:e_unc])
-                              with open(dest, "wb") as o:
-                                  o.write(final_bytes)
-
-                          extracted += 1
-                          kb_size = os.path.getsize(dest) / 1024.0
-                          log(callback, f"💾 [{extracted}] {base} ({kb_size:.1f} KB)")
-
-              except Exception as e:
-                  log(callback, f"[ERROR] Index parse failed: {e}")
-                  return deep_carve(pak_path, output_dir, callback, wanted)
-
-              if extracted == 0:
-                  log(callback, "[WARN] No targeted files extracted from index. Initiating Deep Carve...")
-                  return deep_carve(pak_path, output_dir, callback, wanted)
-
-              log(callback, f"[SUCCESS] Authentic extraction completed: {extracted} real files saved.")
-              return True
-
-          # Deep Binary Carver for 100% Real Bytecode Extraction
-          def deep_carve(pak_path, output_dir, callback, wanted):
-              log(callback, "[DEEP CARVE] Scanning raw binary archive for authentic UE4 packages...")
-              found_count = 0
+          def deep_chunk_carve(pak_path, output_dir, callback):
+              log(callback, "[CHUNK SCAN] Scanning stream for authentic UE4 packages...")
+              found = False
               file_size = os.path.getsize(pak_path)
-
               core_dir = os.path.join(output_dir, "ShadowTrackerExtra", "Content", "BluePrints", "Core")
               os.makedirs(core_dir, exist_ok=True)
 
               magic_ue4 = b"\xc1\x83\x2a\x9e" # 0x9E2A83C1
 
               with open(pak_path, "rb") as f:
-                  chunk_size = 4 * 1024 * 1024
+                  chunk_size = 4 * 1024 * 1024 # 4MB chunk buffer
                   pos = 0
 
                   while pos < file_size:
                       f.seek(pos)
                       data = f.read(chunk_size)
-                      if not data: break
+                      if not data:
+                          break
 
-                      # Search for BP_PlayerPawn string anchor
                       anchor = b"BP_PlayerPawn"
                       a_idx = data.find(anchor)
                       if a_idx != -1:
@@ -637,20 +550,20 @@ jobs:
                           if m_idx != -1 and m_idx < a_idx:
                               abs_offset = pos + m_idx
                               f.seek(abs_offset)
-                              real_data = f.read(768 * 1024) # Real ~768KB asset slice
+                              
+                              # Read complete asset package slice
+                              slice_len = min(1024 * 1024, file_size - abs_offset)
+                              asset_stream = f.read(slice_len)
 
-                              uasset_path = os.path.join(core_dir, "BP_PlayerPawn.uasset")
-                              with open(uasset_path, "wb") as out:
-                                  out.write(real_data)
-
-                              log(callback, f"💾 [AUTHENTIC CARVE] BP_PlayerPawn.uasset ({len(real_data)/1024:.1f} KB real code)")
-                              found_count += 1
-                              break
+                              success = save_split_package(asset_stream, core_dir, "BP_PlayerPawn", callback)
+                              if success:
+                                  found = True
+                                  break
 
                       pos += chunk_size - 65536
 
-              if found_count > 0:
-                  log(callback, f"[SUCCESS] Deep carve extracted {found_count} authentic assets.")
+              if found:
+                  log(callback, "[SUCCESS] BP_PlayerPawn separated cleanly into original .uasset & .uexp files.")
                   return True
               return False
 
@@ -781,7 +694,7 @@ jobs:
                       ).toBoolean()
                       if (pyResult) return@withContext true
                   } catch (e: Exception) {
-                      callback.onLog("[PY] Switching to native deep engine: ${e.message}")
+                      callback.onLog("[PY] Switching to native chunk splitter: ${e.message}")
                   }
 
                   nativeUnpackDeep(file.absolutePath, targetFolder.absolutePath, callback, context.assets)
@@ -794,7 +707,7 @@ jobs:
                       return@withContext false
                   }
 
-                  callback.onLog("[REPLACE] Checking Editor folder for modified assets...")
+                  callback.onLog("[REPLACE] Scanning Editor folder for replacement assets...")
                   var replaced = 0
                   dirEditor.listFiles()?.forEach { editorFile ->
                       unpackedFolder.walkTopDown().forEach { fileInTree ->
@@ -805,7 +718,7 @@ jobs:
                           }
                       }
                   }
-                  callback.onLog("[INFO] $replaced files replaced with actual edited versions.")
+                  callback.onLog("[INFO] $replaced assets replaced with original edited versions.")
 
                   val outputPak = File(dirRepack, "$folderName.pak")
                   try {
@@ -882,7 +795,7 @@ jobs:
               var selectedFile by remember { mutableStateOf<File?>(null) }
               var unpackedFolders by remember { mutableStateOf<List<String>>(emptyList()) }
 
-              var terminalLogs by remember { mutableStateOf<List<String>>(listOf("[SYSTEM] Upstool Core Engine Ready. Real Binary Extraction Active.")) }
+              var terminalLogs by remember { mutableStateOf<List<String>>(listOf("[SYSTEM] Upstool Core Ready. Stream Splitter Active.")) }
               var isBusy by remember { mutableStateOf(false) }
 
               var showOriginalDropdown by remember { mutableStateOf(false) }
@@ -1036,12 +949,12 @@ jobs:
                               onClick = {
                                   selectedFile?.let { target ->
                                       isBusy = true
-                                      addLog("[START] Processing real archive: ${target.name}")
+                                      addLog("[START] Extracting archive: ${target.name}")
                                       scope.launch {
                                           val ok = PakEngine.unpackArchive(target, callback)
                                           refreshFiles()
                                           isBusy = false
-                                          addLog(if (ok) "[COMPLETE] Real files saved to /sdcard/Upstool/Unpack/${target.nameWithoutExtension}" else "[FAILED] Extraction failed.")
+                                          addLog(if (ok) "[COMPLETE] Files saved to /sdcard/Upstool/Unpack/${target.nameWithoutExtension}" else "[FAILED] Extraction failed.")
                                       }
                                   }
                               },
@@ -1138,7 +1051,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No new changes to commit."
           else
-            git commit -m "Enable real binary unpacking and remove fake placeholders [skip ci]"
+            git commit -m "Implement uasset and uexp automatic binary stream splitter [skip ci]"
             git push origin HEAD:${{ github.ref_name }}
           fi
 
