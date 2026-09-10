@@ -91,7 +91,7 @@ Java_com_upstool_paktool_PakEngine_nativeUnpackDeep(
         sendLog(env, jCallback, logMethod, "📁 [CREATED] BP_PlayerPawn.uasset");
     }
     fs::path uexpPath = coreDir / "BP_PlayerPawn.uexp";
-    if (!fs::exists(ueexpPath)) {
+    if (!fs::exists(uexpPath)) {
         std::ofstream f(uexpPath, std::ios::binary);
         f.write("BP_PlayerPawn_Export_Bytecode", 27);
         f.close();

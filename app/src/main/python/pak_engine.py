@@ -19,7 +19,7 @@ def load_manifest(csv_path):
     paths = set()
     with open(csv_path, 'r', encoding='utf-8') as f:
         reader = csv.reader(f)
-        next(reader, None)  # skip header
+        next(reader, None)
         for row in reader:
             if not row: continue
             raw = row[0].strip()
