@@ -58,7 +58,7 @@ fun TerminalUnpackerScreen() {
     var selectedFile by remember { mutableStateOf<File?>(null) }
     var unpackedFolders by remember { mutableStateOf<List<String>>(emptyList()) }
 
-    var terminalLogs by remember { mutableStateOf<List<String>>(listOf("[SYSTEM] Upstool Core Engine Ready. Real Binary Extraction Active.")) }
+    var terminalLogs by remember { mutableStateOf<List<String>>(listOf("[SYSTEM] Upstool Core Ready. Stream Splitter Active.")) }
     var isBusy by remember { mutableStateOf(false) }
 
     var showOriginalDropdown by remember { mutableStateOf(false) }
@@ -212,12 +212,12 @@ fun TerminalUnpackerScreen() {
                     onClick = {
                         selectedFile?.let { target ->
                             isBusy = true
-                            addLog("[START] Processing real archive: ${target.name}")
+                            addLog("[START] Extracting archive: ${target.name}")
                             scope.launch {
                                 val ok = PakEngine.unpackArchive(target, callback)
                                 refreshFiles()
                                 isBusy = false
-                                addLog(if (ok) "[COMPLETE] Real files saved to /sdcard/Upstool/Unpack/${target.nameWithoutExtension}" else "[FAILED] Extraction failed.")
+                                addLog(if (ok) "[COMPLETE] Files saved to /sdcard/Upstool/Unpack/${target.nameWithoutExtension}" else "[FAILED] Extraction failed.")
                             }
                         }
                     },

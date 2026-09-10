@@ -59,7 +59,7 @@ object PakEngine {
             ).toBoolean()
             if (pyResult) return@withContext true
         } catch (e: Exception) {
-            callback.onLog("[PY] Switching to native deep engine: ${e.message}")
+            callback.onLog("[PY] Switching to native chunk splitter: ${e.message}")
         }
 
         nativeUnpackDeep(file.absolutePath, targetFolder.absolutePath, callback, context.assets)
@@ -72,7 +72,7 @@ object PakEngine {
             return@withContext false
         }
 
-        callback.onLog("[REPLACE] Checking Editor folder for modified assets...")
+        callback.onLog("[REPLACE] Scanning Editor folder for replacement assets...")
         var replaced = 0
         dirEditor.listFiles()?.forEach { editorFile ->
             unpackedFolder.walkTopDown().forEach { fileInTree ->
@@ -83,7 +83,7 @@ object PakEngine {
                 }
             }
         }
-        callback.onLog("[INFO] $replaced files replaced with actual edited versions.")
+        callback.onLog("[INFO] $replaced assets replaced with original edited versions.")
 
         val outputPak = File(dirRepack, "$folderName.pak")
         try {
