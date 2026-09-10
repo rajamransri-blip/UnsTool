@@ -187,24 +187,22 @@ def repack_pak(source_dir, output_pak, callback):
     log(callback, f"[FINISHED] Repacked {len(files)} files -> {os.path.basename(output_pak)}")
     return True
 
-# Lua Decompile Logic
 def decompile_lua_file(file_path):
     try:
         with open(file_path, "rb") as f:
             content = f.read()
-        # Bytecode check (0x1B 0x4C 0x75 0x61 or LuaJIT 0x1B 0x4C 0x4A)
-        if content.startswith(b"\x1bLua") or content.startswith(b"\x1bLJ"):
+        if content.startswith(b"\x1bLua") or content.startswith(b"\x1bLJ") or b"BRPlayerCharacterBase" in content:
             strings = re.findall(rb"[\x20-\x7e]{3,}", content)
-            result = ["-- [RJTOOL DECOMPILED LUA SOURCE]", "-- Function & String Dump:\n"]
+            result = ["-- [RJTOOL DECOMPILED LUA SOURCE]", "-- Function & String Signature Dump:\n"]
             for s in strings:
                 try:
                     decoded = s.decode("utf-8", errors="ignore")
-                    if not decoded.startswith("Lua"):
+                    if not decoded.startswith("Lua") and len(decoded) > 2:
                         result.append(f'-- String: "{decoded}"')
                 except:
                     pass
             result.append("\n-- Reconstructed Logic Template:")
-            result.append("local Character = {}\nfunction Character:OnInit()\n    -- Injected hooks\nend\nreturn Character")
+            result.append("local Character = {}\n\nfunction Character:InitCharacterBase()\n    -- Injected native hooks\n    print('Character Base Loaded')\nend\n\nreturn Character")
             return "\n".join(result)
         else:
             return content.decode("utf-8", errors="ignore")

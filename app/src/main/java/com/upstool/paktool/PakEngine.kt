@@ -25,6 +25,11 @@ object PakEngine {
     val dirUnpack   = File(baseDir, "Unpack").apply { mkdirs() }
     val dirRepack   = File(baseDir, "Repack").apply { mkdirs() }
 
+    // Dedicated Lua directory structure
+    val dirLuaOriginal   = File(baseDir, "Lua/Original").apply { mkdirs() }
+    val dirLuaDecompiled = File(baseDir, "Lua/Decompiled").apply { mkdirs() }
+    val dirLuaCompiled   = File(baseDir, "Lua/Compiled").apply { mkdirs() }
+
     private lateinit var context: Context
 
     fun initPython(ctx: Context) {
@@ -40,7 +45,13 @@ object PakEngine {
             val py = Python.getInstance()
             val module = py.getModule("pak_engine")
             val pyResult = module.callAttr("unpack_pak", file.absolutePath, targetFolder.absolutePath, callback).toBoolean()
-            if (pyResult) return@withContext true
+            if (pyResult) {
+                // Auto copy extracted Lua to Lua/Original
+                targetFolder.walkTopDown().filter { it.extension.lowercase() == "lua" }.forEach { luaF ->
+                    luaF.copyTo(File(dirLuaOriginal, luaF.name), overwrite = true)
+                }
+                return@withContext true
+            }
         } catch (e: Exception) {
             callback.onLog("[PY ERROR] ${e.message}")
         }
@@ -82,15 +93,27 @@ object PakEngine {
         try {
             val py = Python.getInstance()
             val module = py.getModule("pak_engine")
-            return@withContext module.callAttr("decompile_lua_file", file.absolutePath).toString()
+            val source = module.callAttr("decompile_lua_file", file.absolutePath).toString()
+            val savePath = File(dirLuaDecompiled, file.name)
+            savePath.writeText(source)
+            return@withContext source
         } catch (e: Exception) {
             return@withContext "-- Error: ${e.message}"
         }
     }
 
     suspend fun saveCompiledLua(fileName: String, code: String): File = withContext(Dispatchers.IO) {
-        val dest = File(dirEditor, fileName)
-        dest.writeText(code)
-        return@withContext dest
+        val destCompiled = File(dirLuaCompiled, fileName)
+        destCompiled.writeText(code)
+        val destEditor = File(dirEditor, fileName)
+        destCompiled.copyTo(destEditor, overwrite = true)
+        return@withContext destCompiled
+    }
+
+    fun getAllLuaFiles(): List<File> {
+        val set = mutableSetOf<File>()
+        dirLuaOriginal.listFiles()?.filter { it.extension.lowercase() in listOf("lua", "luac") }?.let { set.addAll(it) }
+        dirUnpack.walkTopDown().filter { it.extension.lowercase() in listOf("lua", "luac") }.let { set.addAll(it) }
+        return set.toList()
     }
 }
