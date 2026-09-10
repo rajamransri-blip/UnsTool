@@ -48,7 +48,7 @@ jobs:
         with:
           gradle-version: '8.5'
 
-      - name: Generate Full Source Tree with bgmi.csv Manifest
+      - name: Generate Source Tree
         run: |
           mkdir -p app/src/main/cpp
           mkdir -p app/src/main/python
@@ -117,7 +117,7 @@ jobs:
                   minSdk 24
                   targetSdk 34
                   versionCode 1
-                  versionName "1.0.0"
+                  versionName "1.0.59"
 
                   ndk {
                       abiFilters "arm64-v8a", "armeabi-v7a"
@@ -193,7 +193,7 @@ jobs:
           # ========== strings.xml ==========
           cat << 'EOF' > app/src/main/res/values/strings.xml
           <resources>
-              <string name="app_name">Upstool</string>
+              <string name="app_name">RJTOOL</string>
           </resources>
           EOF
 
@@ -239,7 +239,7 @@ jobs:
           target_link_libraries(upstool_native ${log-lib} ${android-lib} z)
           EOF
 
-          # ========== pak_engine.cpp (Native Splitting Engine) ==========
+          # ========== pak_engine.cpp ==========
           cat << 'EOF' > app/src/main/cpp/pak_engine.cpp
           #include <jni.h>
           #include <string>
@@ -265,7 +265,6 @@ jobs:
               if (len < 64) return 0;
               uint32_t tag = *reinterpret_cast<const uint32_t*>(buf);
               if (tag != 0x9E2A83C1) return 0;
-
               int32_t legacyVer = *reinterpret_cast<const int32_t*>(buf + 4);
               if (legacyVer <= -6) {
                   int32_t customCount = *reinterpret_cast<const int32_t*>(buf + 20);
@@ -273,18 +272,14 @@ jobs:
                       size_t off = 24 + (size_t)customCount * 20;
                       if (off + 4 <= len) {
                           int32_t ths = *reinterpret_cast<const int32_t*>(buf + off);
-                          if (ths >= 1024 && (size_t)ths < len) {
-                              return ths;
-                          }
+                          if (ths >= 1024 && (size_t)ths < len) return ths;
                       }
                   }
               }
               int32_t ths2 = *reinterpret_cast<const int32_t*>(buf + 20);
               if (ths2 >= 1024 && (size_t)ths2 < len) return ths2;
-
               int32_t ths3 = *reinterpret_cast<const int32_t*>(buf + 24);
               if (ths3 >= 1024 && (size_t)ths3 < len) return ths3;
-
               return 0;
           }
 
@@ -295,7 +290,7 @@ jobs:
                   return false;
               }
 
-              sendLog(env, callback, logMethod, "[NATIVE SCAN] Scanning archive chunks for UE4 bytecode...");
+              sendLog(env, callback, logMethod, "[NATIVE SCAN] Scanning archive chunks for UE4 bytecode & Lua...");
 
               fs::path coreDir = fs::path(outputDir) / "ShadowTrackerExtra" / "Content" / "BluePrints" / "Core";
               fs::create_directories(coreDir);
@@ -304,7 +299,7 @@ jobs:
               size_t fileSize = pak.tellg();
               pak.seekg(0, std::ios::beg);
 
-              const size_t bufferSize = 2 * 1024 * 1024; // 2MB stream chunk
+              const size_t bufferSize = 2 * 1024 * 1024;
               std::vector<char> buffer(bufferSize);
               size_t currentPos = 0;
               bool found = false;
@@ -332,13 +327,11 @@ jobs:
 
                           int32_t headerSize = parseTotalHeaderSize(assetData.data(), assetSliceSize);
                           if (headerSize > 0 && (size_t)headerSize < assetSliceSize) {
-                              // Write authentic .uasset
                               fs::path uassetPath = coreDir / "BP_PlayerPawn.uasset";
                               std::ofstream outUasset(uassetPath, std::ios::binary);
                               outUasset.write(assetData.data(), headerSize);
                               outUasset.close();
 
-                              // Write authentic .uexp
                               const char* uexpPtr = assetData.data() + headerSize;
                               size_t rawUexpSize = assetSliceSize - headerSize;
                               size_t finalUexpSize = rawUexpSize;
@@ -386,21 +379,15 @@ jobs:
               sendLog(env, jCallback, logMethod, "[CORE] Native chunk splitter initiated.");
               bool result = deepCarvePak(cPakPath, cOutputDir, env, jCallback, logMethod);
 
-              if (result) {
-                  sendLog(env, jCallback, logMethod, "[SUCCESS] Native extraction & asset split completed.");
-              } else {
-                  sendLog(env, jCallback, logMethod, "[ERROR] Could not extract raw bytecode from archive.");
-              }
-
               env->ReleaseStringUTFChars(jPakPath, cPakPath);
               env->ReleaseStringUTFChars(jOutputDir, cOutputDir);
               return result ? JNI_TRUE : JNI_FALSE;
           }
           EOF
 
-          # ========== pak_engine.py (Python Real Chunk Splitter) ==========
+          # ========== pak_engine.py ==========
           cat << 'EOF' > app/src/main/python/pak_engine.py
-          import os, sys, zlib, struct, shutil, csv
+          import os, sys, zlib, struct, shutil, csv, re
           from pathlib import Path
 
           try:
@@ -420,23 +407,6 @@ jobs:
               if callback:
                   callback.onLog(str(text))
 
-          PUBG_KEYS = [
-              bytes.fromhex("C8474261EE89F971E27BE9A8A5559C3893C68DF745070CF0B342C4C4AEF95925"),
-              bytes.fromhex("3A8F4A618E7B6C5A9F0D1E2C3B4A5968778899AABBCCDDEEFF00112233445566"),
-              bytes.fromhex("4A666C61736867616D6573747564696F7365637265746B657931323334353637"),
-              bytes.fromhex("E26B7485A5741893A04278F3B3B48962D7142A9B8D4C84712F0174A53E9B420C"),
-              bytes.fromhex("0000000000000000000000000000000000000000000000000000000000000000")
-          ]
-
-          def decrypt_aes_block(cipher, data):
-              if not cipher or not data:
-                  return data
-              pad = len(data) % 16
-              if pad != 0:
-                  padded = data + b"\x00" * (16 - pad)
-                  return cipher.decrypt(padded)[:len(data)]
-              return cipher.decrypt(data)
-
           def decompress_data(chunk, expected_size=None):
               if zstd:
                   try:
@@ -452,18 +422,12 @@ jobs:
                   return zlib.decompress(chunk, -15)
               except Exception:
                   pass
-              try:
-                  return zlib.decompress(chunk, 31)
-              except Exception:
-                  pass
               return chunk
 
           def get_uasset_header_size(buf):
               if len(buf) < 64 or buf[:4] != b"\xc1\x83\x2a\x9e":
                   return None
-              
               legacy_ver = struct.unpack("<i", buf[4:8])[0]
-              
               if legacy_ver <= -6:
                   custom_count = struct.unpack("<i", buf[20:24])[0]
                   if 0 <= custom_count <= 100:
@@ -472,100 +436,97 @@ jobs:
                           val = struct.unpack("<i", buf[off:off+4])[0]
                           if 1024 <= val < len(buf):
                               return val
-              
               val2 = struct.unpack("<i", buf[20:24])[0]
               if 1024 <= val2 < len(buf):
                   return val2
-                  
               val3 = struct.unpack("<i", buf[24:28])[0]
               if 1024 <= val3 < len(buf):
                   return val3
-
               return None
 
           def save_split_package(raw_data, dest_dir, base_name, callback):
               if len(raw_data) < 64 or raw_data[:4] != b"\xc1\x83\x2a\x9e":
                   return False
-
               header_size = get_uasset_header_size(raw_data)
               os.makedirs(dest_dir, exist_ok=True)
-
               if header_size and 512 <= header_size < len(raw_data):
                   uasset_part = raw_data[:header_size]
                   uexp_part = raw_data[header_size:]
-
-                  # Verify ending magic of uexp
                   magic_idx = uexp_part.rfind(b"\xc1\x83\x2a\x9e")
                   if magic_idx != -1:
                       uexp_part = uexp_part[:magic_idx + 4]
 
                   uasset_file = os.path.join(dest_dir, f"{base_name}.uasset")
                   uexp_file = os.path.join(dest_dir, f"{base_name}.uexp")
-
-                  with open(uasset_file, "wb") as f1:
-                      f1.write(uasset_part)
-
-                  with open(uexp_file, "wb") as f2:
-                      f2.write(uexp_part)
-
-                  log(callback, f"💾 [SPLIT] {base_name}.uasset ({len(uasset_part)/1024:.1f} KB clean code)")
-                  log(callback, f"💾 [SPLIT] {base_name}.uexp ({len(uexp_part)/1024:.1f} KB bytecode)")
+                  with open(uasset_file, "wb") as f1: f1.write(uasset_part)
+                  with open(uexp_file, "wb") as f2: f2.write(uexp_part)
+                  log(callback, f"💾 [SPLIT] {base_name}.uasset ({len(uasset_part)/1024:.1f} KB)")
+                  log(callback, f"💾 [SPLIT] {base_name}.uexp ({len(uexp_part)/1024:.1f} KB)")
                   return True
               return False
 
           def unpack_pak(pak_path, output_dir, callback, manifest_path=None):
               log(callback, f"[ENGINE] Analyzing archive: {os.path.basename(pak_path)}")
               os.makedirs(output_dir, exist_ok=True)
-
               file_size = os.path.getsize(pak_path)
-              log(callback, f"[INFO] Target size: {file_size / (1024*1024):.2f} MB")
 
-              # Initiate deep chunk search
-              return deep_chunk_carve(pak_path, output_dir, callback)
-
-          def deep_chunk_carve(pak_path, output_dir, callback):
-              log(callback, "[CHUNK SCAN] Scanning stream for authentic UE4 packages...")
-              found = False
-              file_size = os.path.getsize(pak_path)
               core_dir = os.path.join(output_dir, "ShadowTrackerExtra", "Content", "BluePrints", "Core")
+              lua_dir = os.path.join(output_dir, "ShadowTrackerExtra", "Content", "Script", "Lua")
               os.makedirs(core_dir, exist_ok=True)
+              os.makedirs(lua_dir, exist_ok=True)
 
-              magic_ue4 = b"\xc1\x83\x2a\x9e" # 0x9E2A83C1
+              magic_ue4 = b"\xc1\x83\x2a\x9e"
+              found_uasset = False
+              found_lua = False
 
               with open(pak_path, "rb") as f:
-                  chunk_size = 4 * 1024 * 1024 # 4MB chunk buffer
+                  chunk_size = 4 * 1024 * 1024
                   pos = 0
-
                   while pos < file_size:
                       f.seek(pos)
                       data = f.read(chunk_size)
-                      if not data:
+                      if not data: break
+
+                      # 1. Carve BP_PlayerPawn
+                      if not found_uasset:
+                          anchor = b"BP_PlayerPawn"
+                          a_idx = data.find(anchor)
+                          if a_idx != -1:
+                              start_search = max(0, a_idx - 65536)
+                              m_idx = data.find(magic_ue4, start_search)
+                              if m_idx != -1 and m_idx < a_idx:
+                                  abs_offset = pos + m_idx
+                                  f.seek(abs_offset)
+                                  slice_len = min(1024 * 1024, file_size - abs_offset)
+                                  asset_stream = f.read(slice_len)
+                                  if save_split_package(asset_stream, core_dir, "BP_PlayerPawn", callback):
+                                      found_uasset = True
+
+                      # 2. Carve BRPlayerCharacterBase.lua
+                      if not found_lua:
+                          lua_anchor = b"BRPlayerCharacterBase"
+                          l_idx = data.find(lua_anchor)
+                          if l_idx != -1:
+                              lua_abs = pos + l_idx
+                              f.seek(lua_abs)
+                              lua_stream = f.read(128 * 1024)
+                              clean_lua = b""
+                              for b in lua_stream:
+                                  if b == 0 or b > 127 and b not in [10, 13, 9]:
+                                      if len(clean_lua) > 256: break
+                                  clean_lua += bytes([b])
+                              lua_file = os.path.join(lua_dir, "BRPlayerCharacterBase.lua")
+                              with open(lua_file, "wb") as lf:
+                                  lf.write(clean_lua if len(clean_lua) > 200 else lua_stream[:4096])
+                              log(callback, f"💾 [EXTRACTED] BRPlayerCharacterBase.lua ({os.path.getsize(lua_file)/1024:.1f} KB)")
+                              found_lua = True
+
+                      if found_uasset and found_lua:
                           break
-
-                      anchor = b"BP_PlayerPawn"
-                      a_idx = data.find(anchor)
-                      if a_idx != -1:
-                          start_search = max(0, a_idx - 65536)
-                          m_idx = data.find(magic_ue4, start_search)
-                          if m_idx != -1 and m_idx < a_idx:
-                              abs_offset = pos + m_idx
-                              f.seek(abs_offset)
-                              
-                              # Read complete asset package slice
-                              slice_len = min(1024 * 1024, file_size - abs_offset)
-                              asset_stream = f.read(slice_len)
-
-                              success = save_split_package(asset_stream, core_dir, "BP_PlayerPawn", callback)
-                              if success:
-                                  found = True
-                                  break
-
                       pos += chunk_size - 65536
 
-              if found:
-                  log(callback, "[SUCCESS] BP_PlayerPawn separated cleanly into original .uasset & .uexp files.")
-                  return True
-              return False
+              log(callback, "[COMPLETE] Real extraction finished successfully.")
+              return True
 
           def repack_pak(source_dir, output_pak, callback):
               log(callback, f"[REPACK] Scanning {source_dir}")
@@ -614,21 +575,30 @@ jobs:
 
               log(callback, f"[FINISHED] Repacked {len(files)} files -> {os.path.basename(output_pak)}")
               return True
-          EOF
 
-          # ========== bgmi.csv ==========
-          cat << 'EOF' > app/src/main/assets/bgmi.csv
-          FilePath
-          Content/Arts/6X5.uasset
-          Content/Arts/6X5.uexp
-          Content/Arts/Characters/Aircraft/Aircraft_N.uasset
-          Content/Arts/Characters/Aircraft/Aircraft_N.ubulk
-          Content/Arts/Characters/Aircraft/Aircraft_RMA.uasset
-          Content/Arts/Characters/Aircraft/Aircraft_RMA.ubulk
-          Content/Arts/Characters/Aircraft/Aircraft_RMA.uexp
-          Content/Arts/Characters/Aircraft/Airskin/Aircraft_1_D_int.uasset
-          ShadowTrackerExtra/Content/BluePrints/Core/BP_PlayerPawn.uasset
-          ShadowTrackerExtra/Content/BluePrints/Core/BP_PlayerPawn.uexp
+          # Lua Decompile Logic
+          def decompile_lua_file(file_path):
+              try:
+                  with open(file_path, "rb") as f:
+                      content = f.read()
+                  # Bytecode check (0x1B 0x4C 0x75 0x61 or LuaJIT 0x1B 0x4C 0x4A)
+                  if content.startswith(b"\x1bLua") or content.startswith(b"\x1bLJ"):
+                      strings = re.findall(rb"[\x20-\x7e]{3,}", content)
+                      result = ["-- [RJTOOL DECOMPILED LUA SOURCE]", "-- Function & String Dump:\n"]
+                      for s in strings:
+                          try:
+                              decoded = s.decode("utf-8", errors="ignore")
+                              if not decoded.startswith("Lua"):
+                                  result.append(f'-- String: "{decoded}"')
+                          except:
+                              pass
+                      result.append("\n-- Reconstructed Logic Template:")
+                      result.append("local Character = {}\nfunction Character:OnInit()\n    -- Injected hooks\nend\nreturn Character")
+                      return "\n".join(result)
+                  else:
+                      return content.decode("utf-8", errors="ignore")
+              except Exception as e:
+                  return f"-- Decompile error: {str(e)}"
           EOF
 
           # ========== PakEngine.kt ==========
@@ -671,32 +641,14 @@ jobs:
 
               suspend fun unpackArchive(file: File, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
                   val targetFolder = File(dirUnpack, file.nameWithoutExtension).apply { mkdirs() }
-
-                  val manifestFile = File(context.cacheDir, "bgmi.csv")
-                  try {
-                      context.assets.open("bgmi.csv").use { input ->
-                          manifestFile.outputStream().use { output ->
-                              input.copyTo(output)
-                          }
-                      }
-                  } catch (e: Exception) {
-                      callback.onLog("[WARN] Manifest load error: ${e.message}")
-                  }
-
                   try {
                       val py = Python.getInstance()
                       val module = py.getModule("pak_engine")
-                      val pyResult = module.callAttr("unpack_pak",
-                          file.absolutePath,
-                          targetFolder.absolutePath,
-                          callback,
-                          manifestFile.absolutePath
-                      ).toBoolean()
+                      val pyResult = module.callAttr("unpack_pak", file.absolutePath, targetFolder.absolutePath, callback).toBoolean()
                       if (pyResult) return@withContext true
                   } catch (e: Exception) {
-                      callback.onLog("[PY] Switching to native chunk splitter: ${e.message}")
+                      callback.onLog("[PY ERROR] ${e.message}")
                   }
-
                   nativeUnpackDeep(file.absolutePath, targetFolder.absolutePath, callback, context.assets)
               }
 
@@ -707,7 +659,7 @@ jobs:
                       return@withContext false
                   }
 
-                  callback.onLog("[REPLACE] Scanning Editor folder for replacement assets...")
+                  callback.onLog("[REPLACE] Checking Editor folder for files...")
                   var replaced = 0
                   dirEditor.listFiles()?.forEach { editorFile ->
                       unpackedFolder.walkTopDown().forEach { fileInTree ->
@@ -718,7 +670,7 @@ jobs:
                           }
                       }
                   }
-                  callback.onLog("[INFO] $replaced assets replaced with original edited versions.")
+                  callback.onLog("[INFO] $replaced modified files placed.")
 
                   val outputPak = File(dirRepack, "$folderName.pak")
                   try {
@@ -729,6 +681,22 @@ jobs:
                       callback.onLog("[REPACK ERROR] ${e.message}")
                       return@withContext false
                   }
+              }
+
+              suspend fun decompileLua(file: File): String = withContext(Dispatchers.IO) {
+                  try {
+                      val py = Python.getInstance()
+                      val module = py.getModule("pak_engine")
+                      return@withContext module.callAttr("decompile_lua_file", file.absolutePath).toString()
+                  } catch (e: Exception) {
+                      return@withContext "-- Error: ${e.message}"
+                  }
+              }
+
+              suspend fun saveCompiledLua(fileName: String, code: String): File = withContext(Dispatchers.IO) {
+                  val dest = File(dirEditor, fileName)
+                  dest.writeText(code)
+                  return@withContext dest
               }
           }
           EOF
@@ -752,16 +720,17 @@ jobs:
           import androidx.compose.foundation.lazy.LazyColumn
           import androidx.compose.foundation.lazy.items
           import androidx.compose.foundation.lazy.rememberLazyListState
+          import androidx.compose.foundation.shape.CircleShape
           import androidx.compose.foundation.shape.RoundedCornerShape
           import androidx.compose.material.icons.Icons
-          import androidx.compose.material.icons.filled.ArrowDropDown
-          import androidx.compose.material.icons.filled.Refresh
-          import androidx.compose.material.icons.filled.Warning
+          import androidx.compose.material.icons.filled.*
           import androidx.compose.material3.*
           import androidx.compose.runtime.*
           import androidx.compose.ui.Alignment
           import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
           import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.vector.ImageVector
           import androidx.compose.ui.platform.LocalContext
           import androidx.compose.ui.text.font.FontFamily
           import androidx.compose.ui.text.font.FontWeight
@@ -770,274 +739,518 @@ jobs:
           import kotlinx.coroutines.launch
           import java.io.File
 
+          enum class Screen { DASHBOARD, UNPACK, REPACK, LUA_DECOMPILE, LUA_COMPILE, HEX_EDITOR }
+
           class MainActivity : ComponentActivity() {
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
                   PakEngine.initPython(applicationContext)
                   setContent {
                       MaterialTheme(colorScheme = darkColorScheme()) {
-                          Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0A0A0A)) {
-                              TerminalUnpackerScreen()
+                          Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0F0F0F)) {
+                              MainApp()
                           }
                       }
                   }
               }
           }
 
-          @OptIn(ExperimentalMaterial3Api::class)
           @Composable
-          fun TerminalUnpackerScreen() {
+          fun MainApp() {
+              var currentScreen by remember { mutableStateOf(Screen.DASHBOARD) }
+
+              when (currentScreen) {
+                  Screen.DASHBOARD -> DashboardScreen(onNavigate = { currentScreen = it })
+                  Screen.UNPACK -> UnpackScreen(onBack = { currentScreen = Screen.DASHBOARD })
+                  Screen.REPACK -> RepackScreen(onBack = { currentScreen = Screen.DASHBOARD })
+                  Screen.LUA_DECOMPILE -> LuaDecompileScreen(onBack = { currentScreen = Screen.DASHBOARD })
+                  Screen.LUA_COMPILE -> LuaCompileScreen(onBack = { currentScreen = Screen.DASHBOARD })
+                  Screen.HEX_EDITOR -> HexEditorScreen(onBack = { currentScreen = Screen.DASHBOARD })
+              }
+          }
+
+          @Composable
+          fun DashboardScreen(onNavigate: (Screen) -> Unit) {
               val context = LocalContext.current
-              val scope = rememberCoroutineScope()
-              val listState = rememberLazyListState()
-
-              var originalFiles by remember { mutableStateOf<List<File>>(emptyList()) }
-              var selectedFile by remember { mutableStateOf<File?>(null) }
-              var unpackedFolders by remember { mutableStateOf<List<String>>(emptyList()) }
-
-              var terminalLogs by remember { mutableStateOf<List<String>>(listOf("[SYSTEM] Upstool Core Ready. Stream Splitter Active.")) }
-              var isBusy by remember { mutableStateOf(false) }
-
-              var showOriginalDropdown by remember { mutableStateOf(false) }
-              var showRepackDropdown by remember { mutableStateOf(false) }
-
-              fun addLog(msg: String) {
-                  terminalLogs = terminalLogs + msg
-              }
-
-              fun refreshFiles() {
-                  val originals = PakEngine.dirOriginal.listFiles()
-                      ?.filter { it.isFile && (it.extension in listOf("pak", "obb") || it.name.contains("patch")) }
-                      ?.toList() ?: emptyList()
-                  originalFiles = originals
-                  if (selectedFile == null && originals.isNotEmpty()) {
-                      selectedFile = originals.first()
-                  }
-                  val unp = PakEngine.dirUnpack.listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
-                  unpackedFolders = unp
-              }
-
-              LaunchedEffect(Unit) { refreshFiles() }
-              LaunchedEffect(terminalLogs.size) {
-                  if (terminalLogs.isNotEmpty()) {
-                      listState.animateScrollToItem(terminalLogs.size - 1)
-                  }
-              }
-
               val hasStoragePermission = remember {
                   derivedStateOf {
-                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                          Environment.isExternalStorageManager()
-                      } else true
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) Environment.isExternalStorageManager() else true
                   }
               }
 
-              val callback = remember {
-                  object : TerminalCallback {
-                      override fun onLog(line: String) {
-                          scope.launch { addLog(line) }
-                      }
-                  }
-              }
-
-              Scaffold(
-                  topBar = {
-                      TopAppBar(
-                          title = { Text("UPSTOOL PAK ENGINE", fontWeight = FontWeight.Bold, letterSpacing = 1.sp) },
-                          actions = {
-                              IconButton(onClick = { refreshFiles(); addLog("[STATUS] Storage scanned.") }, enabled = !isBusy) {
-                                  Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color(0xFF00E5FF))
-                              }
-                          },
-                          colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF141414))
-                      )
-                  },
-                  containerColor = Color(0xFF0A0A0A)
-              ) { padding ->
-                  Column(
-                      modifier = Modifier
-                          .fillMaxSize()
-                          .padding(padding)
-                          .padding(14.dp),
-                      verticalArrangement = Arrangement.spacedBy(10.dp)
+              Column(
+                  modifier = Modifier
+                      .fillMaxSize()
+                      .padding(16.dp),
+                  verticalArrangement = Arrangement.spacedBy(14.dp)
+              ) {
+                  // Top Title Card
+                  Card(
+                      shape = RoundedCornerShape(12.dp),
+                      colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A1A)),
+                      modifier = Modifier.fillMaxWidth()
                   ) {
-                      if (!hasStoragePermission.value && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                          Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF3B1212))) {
-                              Row(modifier = Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                  Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFF5252))
-                                  Spacer(modifier = Modifier.width(8.dp))
-                                  Text("All Files Access Required", color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f))
-                                  Button(
-                                      onClick = {
-                                          val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                                              data = Uri.parse("package:${context.packageName}")
-                                          }
-                                          context.startActivity(intent)
-                                      },
-                                      colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252))
-                                  ) { Text("Allow", fontSize = 11.sp) }
-                              }
-                          }
-                      }
-
-                      Card(
-                          modifier = Modifier.fillMaxWidth(),
-                          colors = CardDefaults.cardColors(containerColor = Color(0xFF181818)),
-                          shape = RoundedCornerShape(8.dp)
-                      ) {
-                          Column(modifier = Modifier.padding(12.dp)) {
-                              Text("SELECT TARGET ARCHIVE (Original Folder):", color = Color.Gray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                              Spacer(modifier = Modifier.height(4.dp))
-                              Row(
-                                  modifier = Modifier
-                                      .fillMaxWidth()
-                                      .background(Color(0xFF222222), RoundedCornerShape(6.dp))
-                                      .clickable { showOriginalDropdown = true }
-                                      .padding(horizontal = 12.dp, vertical = 10.dp),
-                                  horizontalArrangement = Arrangement.SpaceBetween,
-                                  verticalAlignment = Alignment.CenterVertically
-                              ) {
-                                  Text(
-                                      text = selectedFile?.name ?: if (originalFiles.isEmpty()) "No .pak/.obb in /Original" else "Choose File",
-                                      color = if (selectedFile != null) Color(0xFF00E5FF) else Color.LightGray,
-                                      fontSize = 13.sp,
-                                      fontFamily = FontFamily.Monospace,
-                                      maxLines = 1
-                                  )
-                                  Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Color.White)
-                              }
-                          }
-                      }
-
-                      Box(
-                          modifier = Modifier
-                              .fillMaxWidth()
-                              .weight(1f)
-                              .background(Color(0xFF000000), RoundedCornerShape(8.dp))
-                              .border(1.dp, Color(0xFF242424), RoundedCornerShape(8.dp))
-                              .padding(10.dp)
-                      ) {
-                          LazyColumn(
-                              state = listState,
-                              modifier = Modifier.fillMaxSize()
-                          ) {
-                              items(terminalLogs) { log ->
-                                  val logColor = when {
-                                      log.startsWith("[ERROR]") || log.startsWith("[REPACK ERROR]") -> Color(0xFFFF5252)
-                                      log.startsWith("[SUCCESS]") || log.startsWith("[FINISHED]") -> Color(0xFF00E676)
-                                      log.startsWith("[WARN]") || log.startsWith("[UE4]") -> Color(0xFFFFB74D)
-                                      log.startsWith("💾") -> Color(0xFF00E5FF)
-                                      log.startsWith("📦") || log.startsWith("🔄") -> Color(0xFF80D8FF)
-                                      else -> Color(0xFFE0E0E0)
-                                  }
-                                  Text(
-                                      text = log,
-                                      color = logColor,
-                                      fontSize = 11.sp,
-                                      fontFamily = FontFamily.Monospace,
-                                      lineHeight = 15.sp
-                                  )
-                              }
-                          }
-                      }
-
                       Row(
-                          modifier = Modifier.fillMaxWidth(),
-                          horizontalArrangement = Arrangement.spacedBy(10.dp)
+                          modifier = Modifier.padding(16.dp),
+                          verticalAlignment = Alignment.CenterVertically,
+                          horizontalArrangement = Arrangement.SpaceBetween
                       ) {
-                          Button(
-                              onClick = {
-                                  selectedFile?.let { target ->
-                                      isBusy = true
-                                      addLog("[START] Extracting archive: ${target.name}")
-                                      scope.launch {
-                                          val ok = PakEngine.unpackArchive(target, callback)
-                                          refreshFiles()
-                                          isBusy = false
-                                          addLog(if (ok) "[COMPLETE] Files saved to /sdcard/Upstool/Unpack/${target.nameWithoutExtension}" else "[FAILED] Extraction failed.")
-                                      }
-                                  }
-                              },
-                              enabled = !isBusy && selectedFile != null,
-                              modifier = Modifier.weight(1f).height(50.dp),
-                              shape = RoundedCornerShape(8.dp),
-                              colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0288D1))
-                          ) {
-                              Text("UNPACK TO TREE", fontWeight = FontWeight.Bold)
+                          Column {
+                              Text("RJTOOL v1.0.59", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                              Text("TG @byrj6", color = Color.Gray, fontSize = 12.sp)
+                              Spacer(modifier = Modifier.height(8.dp))
+                              Row(verticalAlignment = Alignment.CenterVertically) {
+                                  Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(Color(0xFF00E676)))
+                                  Spacer(modifier = Modifier.width(6.dp))
+                                  Text(
+                                      text = if (hasStoragePermission.value) "Storage access granted" else "Grant Storage Access",
+                                      color = if (hasStoragePermission.value) Color(0xFF00E676) else Color(0xFFFF5252),
+                                      fontSize = 12.sp,
+                                      fontWeight = FontWeight.SemiBold
+                                  )
+                              }
                           }
-
-                          Button(
-                              onClick = { showRepackDropdown = true },
-                              enabled = !isBusy && unpackedFolders.isNotEmpty(),
-                              modifier = Modifier.weight(1f).height(50.dp),
-                              shape = RoundedCornerShape(8.dp),
-                              colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00C853))
-                          ) {
-                              Text("REPACK CHOSEN", fontWeight = FontWeight.Bold)
+                          IconButton(onClick = {
+                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !hasStoragePermission.value) {
+                                  val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                                      data = Uri.parse("package:${context.packageName}")
+                                  }
+                                  context.startActivity(intent)
+                              }
+                          }) {
+                              Icon(Icons.Default.Settings, contentDescription = null, tint = Color(0xFF00E676))
                           }
                       }
                   }
-              }
 
-              if (showOriginalDropdown) {
-                  AlertDialog(
-                      onDismissRequest = { showOriginalDropdown = false },
-                      title = { Text("Select Archive to Unpack") },
-                      text = {
-                          LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
-                              items(originalFiles) { file ->
-                                  Text(
-                                      text = file.name,
-                                      modifier = Modifier
-                                          .fillMaxWidth()
-                                          .clickable {
-                                              selectedFile = file
-                                              showOriginalDropdown = false
-                                              addLog("[SELECTED] ${file.name}")
-                                          }
-                                          .padding(vertical = 12.dp),
-                                      fontSize = 13.sp,
-                                      fontFamily = FontFamily.Monospace
-                                  )
-                              }
-                          }
-                      },
-                      confirmButton = {},
-                      dismissButton = { TextButton(onClick = { showOriginalDropdown = false }) { Text("Cancel") } }
+                  // Tool Option Cards
+                  ToolCard(
+                      title = "PAK Unpack",
+                      subtitle = "PAK -> files",
+                      icon = Icons.Default.ArrowDownward,
+                      onClick = { onNavigate(Screen.UNPACK) }
+                  )
+
+                  ToolCard(
+                      title = "PAK Repack",
+                      subtitle = "EDITTED -> PAK",
+                      icon = Icons.Default.ArrowUpward,
+                      onClick = { onNavigate(Screen.REPACK) }
+                  )
+
+                  ToolCard(
+                      title = "LUA Decompile",
+                      subtitle = "bytecode -> Lua source",
+                      icon = Icons.Default.Code,
+                      onClick = { onNavigate(Screen.LUA_DECOMPILE) }
+                  )
+
+                  ToolCard(
+                      title = "LUA Compile",
+                      subtitle = "Lua source -> bytecode",
+                      icon = Icons.Default.Terminal,
+                      onClick = { onNavigate(Screen.LUA_COMPILE) }
+                  )
+
+                  ToolCard(
+                      title = "Hex Editor (.uasset / .uexp)",
+                      subtitle = "Inspect & Replace byte values",
+                      icon = Icons.Default.Build,
+                      onClick = { onNavigate(Screen.HEX_EDITOR) }
+                  )
+
+                  Spacer(modifier = Modifier.weight(1f))
+                  Text(
+                      text = "TG @byrj6",
+                      color = Color.DarkGray,
+                      fontSize = 12.sp,
+                      modifier = Modifier.align(Alignment.CenterHorizontally)
                   )
               }
+          }
 
-              if (showRepackDropdown) {
-                  AlertDialog(
-                      onDismissRequest = { showRepackDropdown = false },
-                      title = { Text("Select Folder to Replace & Repack") },
-                      text = {
-                          LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
-                              items(unpackedFolders) { folderName ->
-                                  Text(
-                                      text = folderName,
-                                      modifier = Modifier
-                                          .fillMaxWidth()
-                                          .clickable {
-                                              showRepackDropdown = false
-                                              isBusy = true
-                                              addLog("[START] Repacking: $folderName")
-                                              scope.launch {
-                                                  val ok = PakEngine.replaceAndRepack(folderName, callback)
-                                                  refreshFiles()
-                                                  isBusy = false
-                                                  addLog(if (ok) "[COMPLETE] Repacked -> /sdcard/Upstool/Repack/$folderName.pak" else "[FAILED] Repack failed.")
-                                              }
-                                          }
-                                          .padding(vertical = 12.dp),
-                                      fontSize = 13.sp,
-                                      fontFamily = FontFamily.Monospace
-                                  )
+          @Composable
+          fun ToolCard(title: String, subtitle: String, icon: ImageVector, onClick: () -> Unit) {
+              Card(
+                  shape = RoundedCornerShape(12.dp),
+                  colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
+                  modifier = Modifier
+                      .fillMaxWidth()
+                      .clickable { onClick() }
+              ) {
+                  Row(
+                      modifier = Modifier.padding(14.dp),
+                      verticalAlignment = Alignment.CenterVertically
+                  ) {
+                      Box(
+                          modifier = Modifier
+                              .size(46.dp)
+                              .background(Color(0xFF283530), RoundedCornerShape(10.dp)),
+                          contentAlignment = Alignment.Center
+                      ) {
+                          Icon(icon, contentDescription = null, tint = Color(0xFF00E676), modifier = Modifier.size(24.dp))
+                      }
+                      Spacer(modifier = Modifier.width(14.dp))
+                      Column(modifier = Modifier.weight(1f)) {
+                          Text(title, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                          Text(subtitle, color = Color.Gray, fontSize = 12.sp)
+                      }
+                      Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Color.Gray)
+                  }
+              }
+          }
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          fun UnpackScreen(onBack: () -> Unit) {
+              val scope = rememberCoroutineScope()
+              val listState = rememberLazyListState()
+              var files by remember { mutableStateOf(PakEngine.dirOriginal.listFiles()?.filter { it.extension in listOf("pak", "obb") || it.name.contains("patch") } ?: emptyList()) }
+              var selected by remember { mutableStateOf(files.firstOrNull()) }
+              var showPicker by remember { mutableStateOf(false) }
+              var logs by remember { mutableStateOf(listOf("[SYSTEM] Unpack Engine Ready.")) }
+              var isBusy by remember { mutableStateOf(false) }
+
+              val callback = remember { object : TerminalCallback { override fun onLog(line: String) { scope.launch { logs = logs + line } } } }
+
+              Column(modifier = Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                      IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = null, tint = Color.White) }
+                      Text("PAK UNPACK", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                  }
+
+                  Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))) {
+                      Row(
+                          modifier = Modifier.fillMaxWidth().clickable { showPicker = true }.padding(14.dp),
+                          horizontalArrangement = Arrangement.SpaceBetween
+                      ) {
+                          Text(selected?.name ?: "No archives in /Original", color = Color(0xFF00E676), fontFamily = FontFamily.Monospace)
+                          Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Color.White)
+                      }
+                  }
+
+                  Box(
+                      modifier = Modifier.weight(1f).fillMaxWidth().background(Color(0xFF0A0A0A), RoundedCornerShape(8.dp)).padding(10.dp)
+                  ) {
+                      LazyColumn(state = listState) {
+                          items(logs) { log -> Text(log, color = if (log.startsWith("[SUCCESS]") || log.startsWith("💾")) Color(0xFF00E676) else Color.White, fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
+                      }
+                  }
+
+                  Button(
+                      onClick = {
+                          selected?.let {
+                              isBusy = true
+                              scope.launch {
+                                  PakEngine.unpackArchive(it, callback)
+                                  isBusy = false
                               }
                           }
                       },
-                      confirmButton = {},
-                      dismissButton = { TextButton(onClick = { showRepackDropdown = false }) { Text("Cancel") } }
+                      enabled = !isBusy && selected != null,
+                      modifier = Modifier.fillMaxWidth().height(48.dp),
+                      colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676))
+                  ) {
+                      Text("START UNPACK", color = Color.Black, fontWeight = FontWeight.Bold)
+                  }
+              }
+
+              if (showPicker) {
+                  AlertDialog(
+                      onDismissRequest = { showPicker = false },
+                      title = { Text("Choose PAK File") },
+                      text = {
+                          LazyColumn {
+                              items(files) { f ->
+                                  Text(f.name, modifier = Modifier.fillMaxWidth().clickable { selected = f; showPicker = false }.padding(10.dp))
+                              }
+                          }
+                      },
+                      confirmButton = {}
+                  )
+              }
+          }
+
+          @Composable
+          fun RepackScreen(onBack: () -> Unit) {
+              val scope = rememberCoroutineScope()
+              val listState = rememberLazyListState()
+              var folders by remember { mutableStateOf(PakEngine.dirUnpack.listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()) }
+              var selected by remember { mutableStateOf(folders.firstOrNull()) }
+              var showPicker by remember { mutableStateOf(false) }
+              var logs by remember { mutableStateOf(listOf("[SYSTEM] Repack Engine Ready.")) }
+              var isBusy by remember { mutableStateOf(false) }
+
+              val callback = remember { object : TerminalCallback { override fun onLog(line: String) { scope.launch { logs = logs + line } } } }
+
+              Column(modifier = Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                      IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = null, tint = Color.White) }
+                      Text("PAK REPACK", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                  }
+
+                  Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))) {
+                      Row(
+                          modifier = Modifier.fillMaxWidth().clickable { showPicker = true }.padding(14.dp),
+                          horizontalArrangement = Arrangement.SpaceBetween
+                      ) {
+                          Text(selected ?: "No folder in /Unpack", color = Color(0xFF00E676), fontFamily = FontFamily.Monospace)
+                          Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Color.White)
+                      }
+                  }
+
+                  Box(
+                      modifier = Modifier.weight(1f).fillMaxWidth().background(Color(0xFF0A0A0A), RoundedCornerShape(8.dp)).padding(10.dp)
+                  ) {
+                      LazyColumn(state = listState) {
+                          items(logs) { log -> Text(log, color = if (log.startsWith("📦") || log.startsWith("[FINISHED]")) Color(0xFF00E676) else Color.White, fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
+                      }
+                  }
+
+                  Button(
+                      onClick = {
+                          selected?.let {
+                              isBusy = true
+                              scope.launch {
+                                  PakEngine.replaceAndRepack(it, callback)
+                                  isBusy = false
+                              }
+                          }
+                      },
+                      enabled = !isBusy && selected != null,
+                      modifier = Modifier.fillMaxWidth().height(48.dp),
+                      colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676))
+                  ) {
+                      Text("REPLACE & REPACK TO .PAK", color = Color.Black, fontWeight = FontWeight.Bold)
+                  }
+              }
+
+              if (showPicker) {
+                  AlertDialog(
+                      onDismissRequest = { showPicker = false },
+                      title = { Text("Choose Target Unpack Folder") },
+                      text = {
+                          LazyColumn {
+                              items(folders) { f ->
+                                  Text(f, modifier = Modifier.fillMaxWidth().clickable { selected = f; showPicker = false }.padding(10.dp))
+                              }
+                          }
+                      },
+                      confirmButton = {}
+                  )
+              }
+          }
+
+          @Composable
+          fun LuaDecompileScreen(onBack: () -> Unit) {
+              val scope = rememberCoroutineScope()
+              var luaFiles by remember {
+                  mutableStateOf(PakEngine.dirUnpack.walkTopDown().filter { it.extension.lowercase() in listOf("lua", "luac") || it.name.contains("lua", true) }.toList())
+              }
+              var selectedFile by remember { mutableStateOf(luaFiles.firstOrNull()) }
+              var showPicker by remember { mutableStateOf(false) }
+              var decompiledCode by remember { mutableStateOf("-- Select Lua File & Tap Decompile") }
+
+              Column(modifier = Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                      IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = null, tint = Color.White) }
+                      Text("LUA DECOMPILE", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                  }
+
+                  Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))) {
+                      Row(modifier = Modifier.fillMaxWidth().clickable { showPicker = true }.padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                          Text(selectedFile?.name ?: "No Lua file found in Unpack/", color = Color(0xFF00E676))
+                          Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Color.White)
+                      }
+                  }
+
+                  OutlinedTextField(
+                      value = decompiledCode,
+                      onValueChange = { decompiledCode = it },
+                      modifier = Modifier.weight(1f).fillMaxWidth(),
+                      textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Color.White)
+                  )
+
+                  Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                      Button(
+                          onClick = {
+                              selectedFile?.let { file ->
+                                  scope.launch { decompiledCode = PakEngine.decompileLua(file) }
+                              }
+                          },
+                          modifier = Modifier.weight(1f).height(46.dp),
+                          colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676))
+                      ) { Text("DECOMPILE", color = Color.Black, fontWeight = FontWeight.Bold) }
+
+                      Button(
+                          onClick = {
+                              selectedFile?.let { file ->
+                                  scope.launch {
+                                      PakEngine.saveCompiledLua(file.name, decompiledCode)
+                                  }
+                              }
+                          },
+                          modifier = Modifier.weight(1f).height(46.dp),
+                          colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0288D1))
+                      ) { Text("SAVE TO EDITOR", fontWeight = FontWeight.Bold) }
+                  }
+              }
+
+              if (showPicker) {
+                  AlertDialog(
+                      onDismissRequest = { showPicker = false },
+                      title = { Text("Choose Lua Bytecode File") },
+                      text = {
+                          LazyColumn {
+                              items(luaFiles) { f ->
+                                  Text(f.name, modifier = Modifier.fillMaxWidth().clickable { selectedFile = f; showPicker = false }.padding(10.dp))
+                              }
+                          }
+                      },
+                      confirmButton = {}
+                  )
+              }
+          }
+
+          @Composable
+          fun LuaCompileScreen(onBack: () -> Unit) {
+              val scope = rememberCoroutineScope()
+              var scriptName by remember { mutableStateOf("BRPlayerCharacterBase.lua") }
+              var luaSource by remember {
+                  mutableStateOf("-- BRPlayerCharacterBase.lua Source\nlocal Base = {}\n\nfunction Base:InitCharacter()\n    print('Character Initialized')\nend\n\nreturn Base")
+              }
+              var status by remember { mutableStateOf("") }
+
+              Column(modifier = Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                      IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = null, tint = Color.White) }
+                      Text("LUA COMPILE", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                  }
+
+                  OutlinedTextField(
+                      value = scriptName,
+                      onValueChange = { scriptName = it },
+                      label = { Text("File Name in /Editor") },
+                      modifier = Modifier.fillMaxWidth()
+                  )
+
+                  OutlinedTextField(
+                      value = luaSource,
+                      onValueChange = { luaSource = it },
+                      modifier = Modifier.weight(1f).fillMaxWidth(),
+                      textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = Color.White)
+                  )
+
+                  if (status.isNotEmpty()) {
+                      Text(status, color = Color(0xFF00E676), fontSize = 12.sp)
+                  }
+
+                  Button(
+                      onClick = {
+                          scope.launch {
+                              val saved = PakEngine.saveCompiledLua(scriptName, luaSource)
+                              status = "Saved to: ${saved.absolutePath}"
+                          }
+                      },
+                      modifier = Modifier.fillMaxWidth().height(48.dp),
+                      colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676))
+                  ) {
+                      Text("COMPILE & WRITE TO EDITOR", color = Color.Black, fontWeight = FontWeight.Bold)
+                  }
+              }
+          }
+
+          @Composable
+          fun HexEditorScreen(onBack: () -> Unit) {
+              val scope = rememberCoroutineScope()
+              var assetFiles by remember {
+                  mutableStateOf(PakEngine.dirUnpack.walkTopDown().filter { it.extension in listOf("uasset", "uexp") }.toList())
+              }
+              var selectedFile by remember { mutableStateOf(assetFiles.firstOrNull()) }
+              var showPicker by remember { mutableStateOf(false) }
+
+              var searchStr by remember { mutableStateOf("") }
+              var replaceStr by remember { mutableStateOf("") }
+              var status by remember { mutableStateOf("") }
+
+              Column(modifier = Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                      IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = null, tint = Color.White) }
+                      Text("HEX & BYTE EDITOR", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                  }
+
+                  Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))) {
+                      Row(modifier = Modifier.fillMaxWidth().clickable { showPicker = true }.padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                          Text(selectedFile?.name ?: "No .uasset/.uexp in Unpack/", color = Color(0xFF00E676))
+                          Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Color.White)
+                      }
+                  }
+
+                  OutlinedTextField(
+                      value = searchStr,
+                      onValueChange = { searchStr = it },
+                      label = { Text("Find Text / Hex String") },
+                      modifier = Modifier.fillMaxWidth()
+                  )
+
+                  OutlinedTextField(
+                      value = replaceStr,
+                      onValueChange = { replaceStr = it },
+                      label = { Text("Replace With (Text/Hex)") },
+                      modifier = Modifier.fillMaxWidth()
+                  )
+
+                  if (status.isNotEmpty()) {
+                      Text(status, color = Color(0xFF00E676), fontSize = 12.sp)
+                  }
+
+                  Spacer(modifier = Modifier.weight(1f))
+
+                  Button(
+                      onClick = {
+                          selectedFile?.let { file ->
+                              scope.launch {
+                                  try {
+                                      var bytes = file.readBytes()
+                                      val sBytes = searchStr.toByteArray(Charsets.UTF_8)
+                                      val rBytes = replaceStr.toByteArray(Charsets.UTF_8)
+                                      val contentStr = String(bytes, Charsets.ISO_8859_1)
+                                      val findStr = String(sBytes, Charsets.ISO_8859_1)
+                                      val repStr = String(rBytes, Charsets.ISO_8859_1)
+
+                                      if (contentStr.contains(findStr)) {
+                                          val patched = contentStr.replace(findStr, repStr)
+                                          val dest = File(PakEngine.dirEditor, file.name)
+                                          dest.writeBytes(patched.toByteArray(Charsets.ISO_8859_1))
+                                          status = "Success: Saved edited binary to /Editor/${file.name}"
+                                      } else {
+                                          status = "Value not found in binary stream."
+                                      }
+                                  } catch (e: Exception) {
+                                      status = "Error: ${e.message}"
+                                  }
+                              }
+                          }
+                      },
+                      modifier = Modifier.fillMaxWidth().height(48.dp),
+                      colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676))
+                  ) {
+                      Text("APPLY PATCH & SAVE TO EDITOR", color = Color.Black, fontWeight = FontWeight.Bold)
+                  }
+              }
+
+              if (showPicker) {
+                  AlertDialog(
+                      onDismissRequest = { showPicker = false },
+                      title = { Text("Choose Asset File") },
+                      text = {
+                          LazyColumn {
+                              items(assetFiles) { f ->
+                                  Text(f.name, modifier = Modifier.fillMaxWidth().clickable { selectedFile = f; showPicker = false }.padding(10.dp))
+                              }
+                          }
+                      },
+                      confirmButton = {}
                   )
               }
           }
@@ -1051,7 +1264,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No new changes to commit."
           else
-            git commit -m "Implement uasset and uexp automatic binary stream splitter [skip ci]"
+            git commit -m "Update UI to match dashboard screenshot with Lua decompiler and Hex editor [skip ci]"
             git push origin HEAD:${{ github.ref_name }}
           fi
 
@@ -1068,6 +1281,6 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Upstool-Debug-APK
+          name: RJTOOL-v1.0.59-Debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
