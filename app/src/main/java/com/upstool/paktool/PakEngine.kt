@@ -40,19 +40,42 @@ object PakEngine {
 
     suspend fun unpackArchive(file: File, callback: TerminalCallback): Boolean = withContext(Dispatchers.IO) {
         val targetFolder = File(dirUnpack, file.nameWithoutExtension).apply { mkdirs() }
+
+        // Copy BGMI.csv from assets to cache to pass path to python
+        val manifestCache = File(context.cacheDir, "bgmi.csv")
+        try {
+            val assetName = if (context.assets.list("")?.contains("BGMI.csv") == true) "BGMI.csv" else "bgmi.csv"
+            context.assets.open(assetName).use { input ->
+                manifestCache.outputStream().use { output -> input.copyTo(output) }
+            }
+            callback.onLog("[MANIFEST] Connected: $assetName")
+        } catch (e: Exception) {
+            callback.onLog("[MANIFEST] Note: No bgmi.csv asset, proceeding with dynamic inspect")
+        }
+
         try {
             val py = Python.getInstance()
             val module = py.getModule("pak_engine")
-            val pyResult = module.callAttr("unpack_pak", file.absolutePath, targetFolder.absolutePath, callback).toBoolean()
+            val pyResult = module.callAttr("unpack_pak",
+                file.absolutePath,
+                targetFolder.absolutePath,
+                callback,
+                manifestCache.absolutePath
+            ).toBoolean()
+
             if (pyResult) {
+                // Auto copy raw and decompile Lua immediately
                 targetFolder.walkTopDown().filter { it.extension.lowercase() == "lua" }.forEach { luaF ->
-                    luaF.copyTo(File(dirLuaOriginal, luaF.name), overwrite = true)
+                    val origCopy = File(dirLuaOriginal, luaF.name)
+                    luaF.copyTo(origCopy, overwrite = true)
+                    decompileLua(origCopy)
                 }
                 return@withContext true
             }
         } catch (e: Exception) {
             callback.onLog("[PY ERROR] ${e.message}")
         }
+
         nativeUnpackDeep(file.absolutePath, targetFolder.absolutePath, callback, context.assets)
     }
 
@@ -63,7 +86,7 @@ object PakEngine {
             return@withContext false
         }
 
-        callback.onLog("[REPLACE] Checking Editor folder for modified assets...")
+        callback.onLog("[REPLACE] Checking Editor folder for replacement files...")
         var replaced = 0
         dirEditor.listFiles()?.forEach { editorFile ->
             unpackedFolder.walkTopDown().forEach { fileInTree ->
@@ -96,7 +119,7 @@ object PakEngine {
             savePath.writeText(source)
             return@withContext source
         } catch (e: Exception) {
-            return@withContext "-- Error: ${e.message}"
+            return@withContext "-- Decompile Error: ${e.message}"
         }
     }
 

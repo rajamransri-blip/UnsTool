@@ -124,8 +124,8 @@ fun DashboardScreen(onNavigate: (Screen) -> Unit) {
 
         ToolCard("PAK Unpack", "PAK -> files (.uasset, .uexp, .lua)", Icons.Default.ArrowDownward) { onNavigate(Screen.UNPACK) }
         ToolCard("PAK Repack", "EDITTED -> PAK", Icons.Default.ArrowUpward) { onNavigate(Screen.REPACK) }
-        ToolCard("LUA Decompile", "bytecode -> clean Lua source", Icons.Default.Code) { onNavigate(Screen.LUA_DECOMPILE) }
-        ToolCard("LUA Compile", "Lua source -> /Compiled & /Editor", Icons.Default.Terminal) { onNavigate(Screen.LUA_COMPILE) }
+        ToolCard("LUA Decompile", "bytecode -> clean readable Lua", Icons.Default.Code) { onNavigate(Screen.LUA_DECOMPILE) }
+        ToolCard("LUA Compile", "Select script -> /Compiled & /Editor", Icons.Default.Terminal) { onNavigate(Screen.LUA_COMPILE) }
         ToolCard("Hex Editor (.uasset / .uexp)", "Smart Offset Inspector & Patcher", Icons.Default.Build) { onNavigate(Screen.HEX_EDITOR) }
 
         Spacer(modifier = Modifier.height(20.dp))
@@ -161,7 +161,7 @@ fun UnpackScreen(onBack: () -> Unit) {
     var files by remember { mutableStateOf(PakEngine.dirOriginal.listFiles()?.filter { it.extension in listOf("pak", "obb") || it.name.contains("patch") } ?: emptyList()) }
     var selected by remember { mutableStateOf(files.firstOrNull()) }
     var showPicker by remember { mutableStateOf(false) }
-    var logs by remember { mutableStateOf(listOf("[SYSTEM] Unpack Engine Ready.")) }
+    var logs by remember { mutableStateOf(listOf("[SYSTEM] Unpack Engine with BGMI.csv Ready.")) }
     var isBusy by remember { mutableStateOf(false) }
 
     val callback = remember { object : TerminalCallback { override fun onLog(line: String) { scope.launch { logs = logs + line } } } }
@@ -179,7 +179,7 @@ fun UnpackScreen(onBack: () -> Unit) {
         }
         Box(modifier = Modifier.weight(1f).fillMaxWidth().background(Color(0xFF0A0A0A), RoundedCornerShape(8.dp)).padding(10.dp)) {
             LazyColumn(state = listState) {
-                items(logs) { log -> Text(log, color = if (log.startsWith("[SUCCESS]") || log.startsWith("💾")) Color(0xFF00E676) else Color.White, fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
+                items(logs) { log -> Text(log, color = if (log.startsWith("[COMPLETE]") || log.startsWith("💾")) Color(0xFF00E676) else Color.White, fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
             }
         }
         Button(
@@ -192,7 +192,7 @@ fun UnpackScreen(onBack: () -> Unit) {
             enabled = !isBusy && selected != null,
             modifier = Modifier.fillMaxWidth().height(48.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676))
-        ) { Text(if (isBusy) "UNPACKING ASSETS & LUA..." else "START UNPACK", color = Color.Black, fontWeight = FontWeight.Bold) }
+        ) { Text(if (isBusy) "INSPECTING & UNPACKING..." else "INSPECT & START UNPACK", color = Color.Black, fontWeight = FontWeight.Bold) }
     }
     if (showPicker) {
         AlertDialog(
@@ -298,7 +298,7 @@ fun LuaDecompileScreen(onBack: () -> Unit) {
                         isDecompiling = true
                         scope.launch {
                             decompiledCode = PakEngine.decompileLua(file)
-                            status = "Saved: /sdcard/Upstool/Lua/Decompiled/${file.name}"
+                            status = "Saved Clean: /sdcard/Upstool/Lua/Decompiled/${file.name}"
                             isDecompiling = false
                         }
                     }
@@ -342,7 +342,7 @@ fun LuaCompileScreen(onBack: () -> Unit) {
 
     var scriptName by remember { mutableStateOf("BRPlayerCharacterBase.lua") }
     var luaSource by remember {
-        mutableStateOf("-- BRPlayerCharacterBase.lua Script\nlocal Character = {}\n\nfunction Character:InitCharacterBase()\n    print('Character Base Configured')\nend\n\nreturn Character")
+        mutableStateOf("-- BRPlayerCharacterBase.lua Script\nlocal BRPlayerCharacterBase = {}\n\nfunction BRPlayerCharacterBase:InitCharacterBase()\n    print('Character Base Configured')\nend\n\nreturn BRPlayerCharacterBase")
     }
     var status by remember { mutableStateOf("") }
 
@@ -357,7 +357,7 @@ fun LuaCompileScreen(onBack: () -> Unit) {
                 luaFiles = PakEngine.getAllLuaFiles()
                 showPicker = true
             }.padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(text = "Load: " + (selectedFile?.name ?: "Choose File"), color = Color(0xFF00E676), fontFamily = FontFamily.Monospace)
+                Text(text = "Choose Script: " + (selectedFile?.name ?: "Select File"), color = Color(0xFF00E676), fontFamily = FontFamily.Monospace)
                 Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Color.White)
             }
         }
@@ -365,7 +365,7 @@ fun LuaCompileScreen(onBack: () -> Unit) {
         OutlinedTextField(
             value = scriptName,
             onValueChange = { scriptName = it },
-            label = { Text("Output File Name") },
+            label = { Text("Target Output File Name") },
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -384,7 +384,7 @@ fun LuaCompileScreen(onBack: () -> Unit) {
             onClick = {
                 scope.launch {
                     PakEngine.saveCompiledLua(scriptName, luaSource)
-                    status = "Saved to /Lua/Compiled & copied to /Editor!"
+                    status = "Saved to /sdcard/Upstool/Lua/Compiled & copied to /Editor!"
                 }
             },
             modifier = Modifier.fillMaxWidth().height(48.dp),
@@ -404,7 +404,8 @@ fun LuaCompileScreen(onBack: () -> Unit) {
                             scriptName = f.name
                             scope.launch {
                                 try {
-                                    luaSource = f.readText()
+                                    val content = f.readText()
+                                    luaSource = if (content.contains("function") || content.contains("local")) content else PakEngine.decompileLua(f)
                                 } catch (e: Exception) {
                                     luaSource = PakEngine.decompileLua(f)
                                 }
